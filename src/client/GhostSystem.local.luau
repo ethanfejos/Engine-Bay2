@@ -58,8 +58,14 @@ local selectedItemId   = nil
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
+-- AFTER
 local function getEngine(engineName)
-	return workspace:FindFirstChild(engineName)
+	local enginesFolder = workspace:FindFirstChild("Engines")
+	if not enginesFolder then
+		warn("[GhostSystem] 'Engines' folder is missing from Workspace!")
+		return nil
+	end
+	return enginesFolder:FindFirstChild(engineName)
 end
 
 local function findTemplate(partName, engineName)

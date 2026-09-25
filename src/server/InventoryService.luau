@@ -22,7 +22,11 @@ local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local ProfileService = require(ServerScriptService:WaitForChild("Modules"):WaitForChild("ProfileService"))
+-- Points at ProfileManager (wraps the real ProfileService library) rather
+-- than the old hand-rolled ProfileService.luau. Kept as the local name
+-- "ProfileService" so every ProfileService.GetProfile(...) call below is
+-- unchanged.
+local ProfileService = require(ServerScriptService:WaitForChild("Modules"):WaitForChild("ProfileManager"))
 local ToolRegistry   = require(ReplicatedStorage:WaitForChild("Config"):WaitForChild("ToolRegistry"))
 
 -- ── Remotes ───────────────────────────────────────────────────────────────────
@@ -46,9 +50,10 @@ local clearInventory       = getOrCreate(remoteFolder, "RemoteEvent", "ClearInve
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
 local function getEngineForZone(zoneId)
-	local config = ToolRegistry[zoneId]
-	if not config then return nil end
-	return workspace:FindFirstChild(config.partName)
+	-- Routed through ToolRegistry.GetEngineInstance so engine lookup stays
+	-- consistent with EngineServer/EngineCameraController/EngineBillboard —
+	-- engines live in Workspace.Engines, not directly under Workspace.
+	return ToolRegistry.GetEngineInstance(zoneId)
 end
 
 local function getZoneForPlayer(player)
@@ -135,6 +140,11 @@ end
 
 Players.PlayerAdded:Connect(function(player)
 	local profile = ProfileService.LoadProfile(player)
+	if not profile then
+		-- LoadProfile already kicked the player in this case (session
+		-- couldn't be claimed, or they left before loading finished).
+		return
+	end
 	-- Send inventory to client once character loads
 	player.CharacterAdded:Connect(function()
 		task.wait(1)

@@ -22,8 +22,7 @@ local HttpService         = game:GetService("HttpService")
 local ToolRegistry     = require(ReplicatedStorage:WaitForChild("Config"):WaitForChild("ToolRegistry"))
 local InventoryService = require(ServerScriptService:WaitForChild("Services"):WaitForChild("InventoryService"))
 local LevelService      = require(ServerScriptService:WaitForChild("Services"):WaitForChild("LevelService"))
-
-local zonesFolder = workspace:WaitForChild("EngineZones")
+local ZoneUtils         = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 
 -- ── Remote Events ─────────────────────────────────────────────────────────────
 
@@ -46,40 +45,12 @@ local WEAR_MIN          = 10
 local WEAR_MAX          = 100
 local REMOVE_ANIM_DELAY = 0.7
 
--- ── Zone Registration ─────────────────────────────────────────────────────────
-
-local zoneParts = {}
-
-local function registerZone(part)
-	if not part:IsA("BasePart") then return end
-	local zoneId = part:GetAttribute("ZoneId")
-	if not zoneId then return end
-	zoneParts[zoneId] = part
-end
-
-for _, part in ipairs(zonesFolder:GetChildren()) do
-	registerZone(part)
-end
-zonesFolder.ChildAdded:Connect(registerZone)
-
 -- ── Zone & Engine Lookup ──────────────────────────────────────────────────────
-
-local function getZoneForPlayer(player)
-	local hrp = player.Character
-		and player.Character:FindFirstChild("HumanoidRootPart")
-	if not hrp then return nil end
-
-	for zoneId, zone in pairs(zoneParts) do
-		local localPos = zone.CFrame:PointToObjectSpace(hrp.Position)
-		local half     = zone.Size / 2
-		if  math.abs(localPos.X) <= half.X
-			and math.abs(localPos.Y) <= half.Y
-			and math.abs(localPos.Z) <= half.Z then
-			return zoneId
-		end
-	end
-	return nil
-end
+-- Position-check math and per-player zone lookup live in ZoneUtils (shared)
+-- now, instead of a separate copy here. The zoneParts cache and
+-- registerZone/ChildAdded setup that used to back this were only ever used
+-- by getZoneForPlayer, so they're gone too — ZoneUtils re-scans
+-- Workspace.EngineZones directly.
 
 local function getEngineForZone(zoneId)
 	local config = ToolRegistry[zoneId]
@@ -152,7 +123,7 @@ removeEvent.OnServerEvent:Connect(function(player, model)
 		return
 	end
 
-	local zoneId = getZoneForPlayer(player)
+	local zoneId = ZoneUtils.GetZoneForPlayer(player)
 	if not zoneId then
 		warn("[EngineServer] Out-of-zone remove attempt from:", player.Name)
 		return

@@ -33,6 +33,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local ProfileManager = require(ServerScriptService:WaitForChild("Modules"):WaitForChild("ProfileManager"))
 local LevelCurve      = require(ReplicatedStorage:WaitForChild("Config"):WaitForChild("LevelCurve"))
 local ToolRegistry    = require(ReplicatedStorage:WaitForChild("Config"):WaitForChild("ToolRegistry"))
+local ZoneUtils       = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 
 -- ── XP Award Amounts ─────────────────────────────────────────────────────────
 
@@ -107,29 +108,6 @@ end)
 -- blindly — a client could otherwise fire this remote directly (e.g. via
 -- a script executor) for parts it never actually looked at.
 
-local function getZoneForPlayer(player)
-	local hrp = player.Character
-		and player.Character:FindFirstChild("HumanoidRootPart")
-	if not hrp then return nil end
-
-	local zonesFolder = workspace:FindFirstChild("EngineZones")
-	if not zonesFolder then return nil end
-
-	for _, zone in ipairs(zonesFolder:GetChildren()) do
-		if not zone:IsA("BasePart") then continue end
-		local zoneId = zone:GetAttribute("ZoneId")
-		if not zoneId then continue end
-		local localPos = zone.CFrame:PointToObjectSpace(hrp.Position)
-		local half      = zone.Size / 2
-		if  math.abs(localPos.X) <= half.X
-			and math.abs(localPos.Y) <= half.Y
-			and math.abs(localPos.Z) <= half.Z then
-			return zoneId
-		end
-	end
-	return nil
-end
-
 partInspected.OnServerEvent:Connect(function(player, engineName, partName)
 	if type(engineName) ~= "string" or type(partName) ~= "string" then return end
 
@@ -137,7 +115,7 @@ partInspected.OnServerEvent:Connect(function(player, engineName, partName)
 	if not profile then return end
 
 	-- Must actually be standing in a zone whose engine matches the one claimed.
-	local zoneId = getZoneForPlayer(player)
+	local zoneId = ZoneUtils.GetZoneForPlayer(player)
 	if not zoneId then
 		warn("[LevelService] Inspect XP claim with no zone from:", player.Name)
 		return

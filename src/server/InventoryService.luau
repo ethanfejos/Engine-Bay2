@@ -28,6 +28,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 -- unchanged.
 local ProfileService = require(ServerScriptService:WaitForChild("Modules"):WaitForChild("ProfileManager"))
 local ToolRegistry   = require(ReplicatedStorage:WaitForChild("Config"):WaitForChild("ToolRegistry"))
+local ZoneUtils      = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 
 -- ── Remotes ───────────────────────────────────────────────────────────────────
 
@@ -54,27 +55,6 @@ local function getEngineForZone(zoneId)
 	-- consistent with EngineServer/EngineCameraController/EngineBillboard —
 	-- engines live in Workspace.Engines, not directly under Workspace.
 	return ToolRegistry.GetEngineInstance(zoneId)
-end
-
-local function getZoneForPlayer(player)
-	local hrp = player.Character
-		and player.Character:FindFirstChild("HumanoidRootPart")
-	if not hrp then return nil end
-
-	local zonesFolder = workspace:WaitForChild("EngineZones")
-	for _, zone in ipairs(zonesFolder:GetChildren()) do
-		if not zone:IsA("BasePart") then continue end
-		local zoneId  = zone:GetAttribute("ZoneId")
-		if not zoneId then continue end
-		local localPos = zone.CFrame:PointToObjectSpace(hrp.Position)
-		local half     = zone.Size / 2
-		if  math.abs(localPos.X) <= half.X
-			and math.abs(localPos.Y) <= half.Y
-			and math.abs(localPos.Z) <= half.Z then
-			return zoneId
-		end
-	end
-	return nil
 end
 
 -- ── Inventory API ─────────────────────────────────────────────────────────────
@@ -174,7 +154,7 @@ reinstallEvent.OnServerEvent:Connect(function(player, itemId)
 	local engineName = item.engineName
 
 	-- Validate player is in correct zone
-	local zoneId = getZoneForPlayer(player)
+	local zoneId = ZoneUtils.GetZoneForPlayer(player)
 	if not zoneId then
 		warn("[InventoryService] Player not in zone:", player.Name)
 		return

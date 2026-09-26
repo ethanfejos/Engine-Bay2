@@ -9,7 +9,10 @@
 
 local Players        = game:GetService("Players")
 local RunService     = game:GetService("RunService")
+local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
+
+local ZoneUtils = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 
 -- Parent events inside Services folder so ToolService can find them
 local servicesFolder    = ServerScriptService:WaitForChild("Services")
@@ -29,14 +32,6 @@ local zonesFolder = workspace:WaitForChild("EngineZones")
 
 -- [char] = zoneId currently occupied
 local playerZone = {}
-
-local function isInsideZone(hrp, zone)
-	local local_pos = zone.CFrame:PointToObjectSpace(hrp.Position)
-	local half      = zone.Size / 2
-	return math.abs(local_pos.X) <= half.X
-		and math.abs(local_pos.Y) <= half.Y
-		and math.abs(local_pos.Z) <= half.Z
-end
 
 local function getZoneParts()
 	local parts = {}
@@ -81,7 +76,7 @@ RunService.Heartbeat:Connect(function()
 		local stillInside = false
 		for _, zone in ipairs(zoneParts) do
 			if zone:GetAttribute("ZoneId") == zoneId then
-				if isInsideZone(hrp, zone) then
+				if ZoneUtils.IsPositionInZone(hrp.Position, zone) then
 					stillInside = true
 				end
 				break

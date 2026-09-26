@@ -21,6 +21,7 @@ local HttpService         = game:GetService("HttpService")
 
 local ToolRegistry     = require(ReplicatedStorage:WaitForChild("Config"):WaitForChild("ToolRegistry"))
 local InventoryService = require(ServerScriptService:WaitForChild("Services"):WaitForChild("InventoryService"))
+local LevelService      = require(ServerScriptService:WaitForChild("Services"):WaitForChild("LevelService"))
 
 local zonesFolder = workspace:WaitForChild("EngineZones")
 
@@ -211,6 +212,7 @@ removeEvent.OnServerEvent:Connect(function(player, model)
 		if model and model.Parent then
 			model:Destroy()
 			InventoryService.AddPart(player, modelName, wear, engineName, relativeData, itemId)
+			LevelService.AddXP(player, LevelService.XP_AWARDS.remove, "remove")
 		end
 	end)
 end)

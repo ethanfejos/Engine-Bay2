@@ -20,6 +20,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 -- "ProfileService" so the ProfileService.GetProfile(...) call below is unchanged.
 local ProfileService   = require(ServerScriptService:WaitForChild("Modules"):WaitForChild("ProfileManager"))
 local InventoryService = require(ServerScriptService:WaitForChild("Services"):WaitForChild("InventoryService"))
+local LevelService      = require(ServerScriptService:WaitForChild("Services"):WaitForChild("LevelService"))
 
 -- ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -158,6 +159,7 @@ startRepairEvent.OnServerEvent:Connect(function(player, itemId)
 		end
 
 		repairComplete:FireClient(player, itemId, item.name)
+		LevelService.AddXP(player, LevelService.XP_AWARDS.repair, "repair")
 		activeRepairs[player] = nil
 	end)
 

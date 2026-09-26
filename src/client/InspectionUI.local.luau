@@ -23,6 +23,10 @@ local EngineContext   = require(Modules:WaitForChild("EngineContext"))
 local GUIBuilder      = require(UI:WaitForChild("GUIBuilder"))
 local WearDisplay     = require(UI:WaitForChild("WearDisplay"))
 
+local partInspectedEvent = ReplicatedStorage
+	:WaitForChild("RemoteEvents")
+	:WaitForChild("PartInspected")
+
 -- ── State ─────────────────────────────────────────────────────────────────────
 
 local currentGUI      = nil
@@ -132,6 +136,14 @@ local function showGUI(model)
 
 			-- Hand off to WearDisplay which animates bar to wear value
 			wearConnection = WearDisplay.Start(model, labels, part)
+
+			-- Tell the server this part was just inspected, for XP.
+			-- Server re-validates zone/engine/part before granting anything —
+			-- this is just the trigger, not the authority.
+			local engineName = model.Parent and model.Parent.Name
+			if engineName then
+				partInspectedEvent:FireServer(engineName, model.Name)
+			end
 		end
 	)
 end

@@ -1,10 +1,10 @@
 --[[
     EngineCameraController (LocalScript)
     -------------------------------------
-    Updated Version:
-    - Reconfigured Boot pipeline to use the updated ToolRegistry
-    - Resolves targets within Workspace.Engines via '.GetEngineInstance()'
-    - Retains cinematic transitions, input sinking, and bounding-box orbit logic
+    Wires the "enter engine bay" prompt and cinematic camera onto any
+    engine model, wherever it lives in the workspace — detected
+    structurally (has an EngineTrigger child), not by folder location or
+    ToolRegistry config. See "Dynamic Engine Detection" below.
 ]]
 
 local Players            = game:GetService("Players")
@@ -20,7 +20,6 @@ local Modules = ReplicatedStorage:WaitForChild("Modules")
 
 local EngineContext    = require(Modules:WaitForChild("EngineContext"))
 local CharacterManager = require(Modules:WaitForChild("CharacterManager"))
-local ToolRegistry     = require(ReplicatedStorage:WaitForChild("Config"):WaitForChild("ToolRegistry"))
 
 -- ── Config ────────────────────────────────────────────────────────────────────
 
@@ -63,6 +62,7 @@ local pivotOffset   = Vector3.new()
 local pivotTarget   = Vector3.new()  
 local activePrompt  = nil
 local entryTween    = nil
+local currentEngine = nil -- the engine model currently being viewed, if any
 
 local renderConnection = nil
 local inputBeganConn   = nil
@@ -277,7 +277,8 @@ end
 
 exitEngineView = function()
 	if not active then return end
-	active = false
+	active        = false
+	currentEngine = nil
 
 	if entryTween then
 		entryTween()
@@ -300,12 +301,17 @@ exitEngineView = function()
 end
 
 local function enterEngineView(engine, prompt)
+	print("[EngineCameraController][DEBUG] enterEngineView called for:", engine.Name)
 	if active then return end
 
 	local char = player.Character
-	if not char then return end
+	if not char then
+		warn("[EngineCameraController][DEBUG] enterEngineView aborted — no character")
+		return
+	end
 
 	active        = true
+	currentEngine = engine
 	activePrompt  = prompt
 	pivotOffset   = Vector3.new()  
 	pivotTarget   = Vector3.new()  
@@ -374,40 +380,89 @@ end
 
 -- ── ProximityPrompt wiring ────────────────────────────────────────────────────
 
+-- ── Visibility check ──────────────────────────────────────────────────────────
+-- Some engine models use an invisible anchor/hitbox part as their PrimaryPart
+-- (common for pivoting), so trusting one specific part's Transparency isn't
+-- reliable across different engine models. Instead: is ANY part of this
+-- model actually visible right now? Uses Transparency (the authored value),
+-- not LocalTransparencyModifier — see CharacterManager's header comment for
+-- why that property can't be trusted for this kind of check.
+local function isModelVisible(model)
+	for _, part in ipairs(model:GetDescendants()) do
+		if part:IsA("BasePart") and part.Transparency < 0.9 then
+			return true
+		end
+	end
+	return false
+end
+
 local function wirePrompt(engine)
 	local trigger = engine:WaitForChild("EngineTrigger", 10)
-	if not trigger then return end
+	if not trigger then
+		warn("[EngineCameraController][DEBUG] No EngineTrigger found under:", engine:GetFullName())
+		return
+	end
 
 	local prompt = trigger:FindFirstChildWhichIsA("ProximityPrompt") or trigger:WaitForChild("ProximityPrompt", 5)
-	if not prompt then return end
+	if not prompt then
+		warn("[EngineCameraController][DEBUG] No ProximityPrompt found under EngineTrigger on:", engine:GetFullName())
+		return
+	end
+
+	print("[EngineCameraController][DEBUG] Wired prompt successfully on:", engine:GetFullName())
 
 	prompt.Triggered:Connect(function()
-		-- Verify that this engine model is currently visible before allowing entry
-		local primary = engine.PrimaryPart or engine:FindFirstChildWhichIsA("BasePart", true)
-		if primary and primary.LocalTransparencyModifier < 0.5 then
-			if not active then
-				enterEngineView(engine, prompt)
-			end
+		print("[EngineCameraController][DEBUG] Prompt.Triggered fired for:", engine:GetFullName())
+
+		if not isModelVisible(engine) then
+			warn("[EngineCameraController][DEBUG] Entry blocked — no visible part found on:", engine.Name)
+			return
 		end
+		if active then
+			warn("[EngineCameraController][DEBUG] Entry blocked — already in engine view")
+			return
+		end
+
+		print("[EngineCameraController][DEBUG] Checks passed, calling enterEngineView for:", engine.Name)
+		enterEngineView(engine, prompt)
 	end)
 end
 
--- ── Registry Mapped Folder Boot ───────────────────────────────────────────────
+-- ── Dynamic Engine Detection ──────────────────────────────────────────────────
+-- Any Model, anywhere in the workspace, that has an "EngineTrigger" child gets
+-- a prompt wired automatically — no dependency on Workspace.Engines or
+-- config. This means an engine sitting inside a car model (or anywhere
+-- else) works exactly the same as one sitting in the old fixed folder.
 
-local wiredNames = {}
-for _, zoneId in ipairs(ToolRegistry.GetAllZoneIds()) do
-	local partName = ToolRegistry.GetPartNameForZone(zoneId)
-	if partName and not wiredNames[partName] then
-		wiredNames[partName] = true
+local wiredModels = {} -- [model] = true, once wired, to avoid double-wiring
 
-		task.spawn(function()
-			-- Pull instance specifically from Workspace.Engines layout rule
-			local engine = ToolRegistry.GetEngineInstance(zoneId, 10)
-			if not engine then
-				warn("[EngineCameraController] Registered engine not found inside folder structure:", partName)
-				return
-			end
-			wirePrompt(engine)
-		end)
-	end
+local function tryWireEngine(instance)
+	if wiredModels[instance] then return end
+	if not instance:IsA("Model") then return end
+	if not instance:FindFirstChild("EngineTrigger") then return end
+
+	print("[EngineCameraController][DEBUG] Detected candidate engine model:", instance:GetFullName())
+	wiredModels[instance] = true
+	wirePrompt(instance)
 end
+
+print("[EngineCameraController][DEBUG] Script started, scanning workspace...")
+
+-- Catch anything already in the workspace when this script starts.
+for _, descendant in ipairs(Workspace:GetDescendants()) do
+	tryWireEngine(descendant)
+end
+
+print("[EngineCameraController][DEBUG] Initial scan complete.")
+
+-- Catch anything added later — a car being parked into a zone, for example.
+Workspace.DescendantAdded:Connect(tryWireEngine)
+
+-- If the engine currently being viewed gets removed from the world (driven
+-- away, destroyed, etc.), don't leave the camera stuck in engine-view mode.
+Workspace.DescendantRemoving:Connect(function(instance)
+	wiredModels[instance] = nil
+	if instance == currentEngine then
+		exitEngineView()
+	end
+end)

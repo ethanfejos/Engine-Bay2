@@ -26,8 +26,6 @@ local ServerScriptService = game:GetService("ServerScriptService")
 -- than the old hand-rolled ProfileService.luau. Kept as the local name
 -- "ProfileService" so every ProfileService.GetProfile(...) call below is
 -- unchanged.
-local ProfileService = require(ServerScriptService:WaitForChild("Modules"):WaitForChild("ProfileManager"))
-local ToolRegistry   = require(ReplicatedStorage:WaitForChild("Config"):WaitForChild("ToolRegistry"))
 local ZoneUtils      = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 
 -- ── Remotes ───────────────────────────────────────────────────────────────────
@@ -49,13 +47,6 @@ local partReinstalledEvent = getOrCreate(remoteFolder, "RemoteEvent", "PartReins
 local clearInventory       = getOrCreate(remoteFolder, "RemoteEvent", "ClearInventory")
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
-
-local function getEngineForZone(zoneId)
-	-- Routed through ToolRegistry.GetEngineInstance so engine lookup stays
-	-- consistent with EngineServer/EngineCameraController/EngineBillboard —
-	-- engines live in Workspace.Engines, not directly under Workspace.
-	return ToolRegistry.GetEngineInstance(zoneId)
-end
 
 -- ── Inventory API ─────────────────────────────────────────────────────────────
 
@@ -154,13 +145,13 @@ reinstallEvent.OnServerEvent:Connect(function(player, itemId)
 	local engineName = item.engineName
 
 	-- Validate player is in correct zone
-	local zoneId = ZoneUtils.GetZoneForPlayer(player)
-	if not zoneId then
+	-- The engine is whatever is parked in the bay the player is standing in.
+	local engine, zone = ZoneUtils.GetEngineForPlayer(player)
+	if not zone then
 		warn("[InventoryService] Player not in zone:", player.Name)
 		return
 	end
 
-	local engine = getEngineForZone(zoneId)
 	if not engine or engine.Name ~= engineName then
 		warn("[InventoryService] Engine mismatch for:", player.Name)
 		return

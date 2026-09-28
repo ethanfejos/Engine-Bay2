@@ -20,6 +20,7 @@ local Modules = ReplicatedStorage:WaitForChild("Modules")
 
 local EngineContext    = require(Modules:WaitForChild("EngineContext"))
 local CharacterManager = require(Modules:WaitForChild("CharacterManager"))
+local ZoneUtils         = require(Modules:WaitForChild("ZoneUtils"))
 
 -- ── Config ────────────────────────────────────────────────────────────────────
 
@@ -414,6 +415,18 @@ local function wirePrompt(engine)
 	prompt.Triggered:Connect(function()
 		print("[EngineCameraController][DEBUG] Prompt.Triggered fired for:", engine:GetFullName())
 
+		-- Must be standing in the same zone this engine is physically parked
+		-- in — entry used to be purely proximity-to-the-object, with no zone
+		-- check at all. This adds one: the engine's own position tells us
+		-- which zone it's sitting in, and the player has to be in that same
+		-- zone right now.
+		local engineZone = ZoneUtils.GetZoneForPosition(engine:GetPivot().Position)
+		local playerZone = ZoneUtils.GetZoneForPlayer(player)
+		if not engineZone or not playerZone or engineZone ~= playerZone then
+			warn("[EngineCameraController][DEBUG] Entry blocked — not in the same zone as this engine:", engine.Name)
+			return
+		end
+
 		if not isModelVisible(engine) then
 			warn("[EngineCameraController][DEBUG] Entry blocked — no visible part found on:", engine.Name)
 			return
@@ -446,17 +459,38 @@ local function tryWireEngine(instance)
 	wirePrompt(instance)
 end
 
+-- Some vehicle/chassis systems (e.g. A-Chassis) assemble a car's parts
+-- progressively after it's parented into the workspace — the engine model
+-- itself can appear before its EngineTrigger child does. tryWireEngine only
+-- checks an instance once, at the moment IT is added, so a model that
+-- appears before its trigger would otherwise never get a second look once
+-- the trigger shows up later. This catches that case from the other
+-- direction: if the newly-added thing IS an EngineTrigger, go straight to
+-- its parent instead of waiting on the parent to be re-checked.
+local function tryWireEngineTrigger(instance)
+	if instance.Name ~= "EngineTrigger" then return end
+	local model = instance.Parent
+	if model then
+		tryWireEngine(model)
+	end
+end
+
 print("[EngineCameraController][DEBUG] Script started, scanning workspace...")
 
 -- Catch anything already in the workspace when this script starts.
 for _, descendant in ipairs(Workspace:GetDescendants()) do
 	tryWireEngine(descendant)
+	tryWireEngineTrigger(descendant)
 end
 
 print("[EngineCameraController][DEBUG] Initial scan complete.")
 
--- Catch anything added later — a car being parked into a zone, for example.
-Workspace.DescendantAdded:Connect(tryWireEngine)
+-- Catch anything added later — a car being parked into a zone, an
+-- EngineTrigger being added after its model already exists, etc.
+Workspace.DescendantAdded:Connect(function(instance)
+	tryWireEngine(instance)
+	tryWireEngineTrigger(instance)
+end)
 
 -- If the engine currently being viewed gets removed from the world (driven
 -- away, destroyed, etc.), don't leave the camera stuck in engine-view mode.

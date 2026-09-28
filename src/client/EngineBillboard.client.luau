@@ -1,8 +1,10 @@
 --[[
     EngineBillboard (LocalScript)
     -----------------------------
-    Updated Version:
-    - Uses updated ToolRegistry helper method to look inside Workspace.Engines
+    Shows the health/completion billboard over any engine, wherever it lives in
+    the workspace. Engines are detected structurally (a Model with an
+    "EngineTrigger" child) — no dependency on Workspace.Engines or any config,
+    so an engine inside a car works the same as a standalone one.
     - Preserves all original layout structures, completion rings, and fading logic
 ]]
 
@@ -15,7 +17,6 @@ local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 local Modules   = ReplicatedStorage:WaitForChild("Modules")
 
-local ToolRegistry    = require(ReplicatedStorage:WaitForChild("Config"):WaitForChild("ToolRegistry"))
 local InspectionState = require(Modules:WaitForChild("InspectionState"))
 local EngineContext   = require(Modules:WaitForChild("EngineContext"))
 
@@ -535,22 +536,52 @@ local function buildBillboard(engine)
 	end)
 end
 
--- ── Boot (Updated to use your new ToolRegistry method) ──────────────────────────
+-- ── Dynamic Engine Detection ──────────────────────────────────────────────────
+-- Same approach as EngineCameraController: any Model with an "EngineTrigger"
+-- child gets a billboard. Checked from both directions because a car system
+-- may parent the engine model before its EngineTrigger exists.
 
-local wiredNames = {}
-for _, zoneId in ipairs(ToolRegistry.GetAllZoneIds()) do
-	local partName = ToolRegistry.GetPartNameForZone(zoneId)
-	if partName and not wiredNames[partName] then
-		wiredNames[partName] = true
-		task.spawn(function()
-			-- Uses the clean layout check you just added!
-			local engine = ToolRegistry.GetEngineInstance(zoneId, 10)
-			if not engine then
-				warn("[EngineBillboard] Engine not found in folder layout:", partName)
-				return
-			end
-			task.wait(2)
-			buildBillboard(engine)
-		end)
-	end
+local Workspace = game:GetService("Workspace")
+local built = {} -- [model] = true once a billboard was scheduled for it
+
+local function tryBuild(instance)
+	if built[instance] then return end
+	if not instance:IsA("Model") then return end
+	if not instance:FindFirstChild("EngineTrigger") then return end
+
+	built[instance] = true
+	task.delay(2, function() -- give wear/part attributes a moment to initialise
+		if instance.Parent then
+			buildBillboard(instance)
+		end
+	end)
 end
+
+local function tryBuildFromTrigger(instance)
+	if instance.Name ~= "EngineTrigger" then return end
+	if instance.Parent then tryBuild(instance.Parent) end
+end
+
+for _, descendant in ipairs(Workspace:GetDescendants()) do
+	tryBuild(descendant)
+	tryBuildFromTrigger(descendant)
+end
+
+Workspace.DescendantAdded:Connect(function(instance)
+	tryBuild(instance)
+	tryBuildFromTrigger(instance)
+end)
+
+-- When an engine leaves the world (car driven away, destroyed), remove its
+-- billboard too. Billboard update loops stop on their own once it's gone.
+Workspace.DescendantRemoving:Connect(function(instance)
+	built[instance] = nil
+	for _, gui in ipairs(playerGui:GetChildren()) do
+		if gui:IsA("BillboardGui") and gui.Name == "EngineBillboard" then
+			local adornee = gui.Adornee
+			if not adornee or adornee == instance or adornee:IsDescendantOf(instance) then
+				gui:Destroy()
+			end
+		end
+	end
+end)

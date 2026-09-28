@@ -1,11 +1,13 @@
 --[[
     ToolService (Script)
     --------------------
-    Changes from previous version:
-    - ZoneServiceEvents folder is now inside ServerScriptService/Services
+    Grants/removes tools as players enter/leave zones.
+    - ZoneServiceEvents folder is inside ServerScriptService/Services
       (created by ZoneService at runtime — ZoneService must run first)
-    - ToolRegistry now exposes GetAllZoneIds / GetToolsForZone methods
-    - Everything else unchanged
+    - Tools come from the zone's TYPE (ToolRegistry.GetToolsForType), so every
+      bay of the same type gives the same tools
+    - Ownership is tracked per zone NAME, so standing in two overlapping bays
+      only removes a tool once the player has left both
 ]]
 
 local Players             = game:GetService("Players")
@@ -17,15 +19,15 @@ local ToolRegistry = require(ReplicatedStorage:WaitForChild("Config")
 
 local toolsFolder = ReplicatedStorage:WaitForChild("Tools")
 
-local eventsFolder      = ServerScriptService:WaitForChild("Services")
+local eventsFolder      = ServerScriptService:WaitForChild("Server"):WaitForChild("Services")
 	:WaitForChild("ZoneServiceEvents", 10)
 local PlayerEnteredZone = eventsFolder:WaitForChild("PlayerEnteredZone")
 local PlayerLeftZone    = eventsFolder:WaitForChild("PlayerLeftZone")
 
 -- Load and validate all tool templates at startup
 local toolTemplates = {}
-for _, zoneId in ipairs(ToolRegistry.GetAllZoneIds()) do
-	for _, toolName in ipairs(ToolRegistry.GetToolsForZone(zoneId)) do
+for _, zoneType in ipairs(ToolRegistry.GetAllZoneTypes()) do
+	for _, toolName in ipairs(ToolRegistry.GetToolsForType(zoneType)) do
 		if not toolTemplates[toolName] then
 			local template = toolsFolder:FindFirstChild(toolName)
 			assert(template, "[ToolService] Missing tool template: " .. toolName)
@@ -34,7 +36,7 @@ for _, zoneId in ipairs(ToolRegistry.GetAllZoneIds()) do
 	end
 end
 
--- Ownership tracking: player -> toolName -> { zoneId -> true }
+-- Ownership tracking: player -> toolName -> { zoneName -> true }
 local playerOwnership   = {}
 local inventoryWatchers = {}
 
@@ -49,16 +51,16 @@ local function hasReason(player, toolName)
 	return next(ownership[toolName]) ~= nil
 end
 
-local function addReason(player, toolName, zoneId)
+local function addReason(player, toolName, zoneName)
 	local ownership = getOrCreateOwnership(player)
 	ownership[toolName] = ownership[toolName] or {}
-	ownership[toolName][zoneId] = true
+	ownership[toolName][zoneName] = true
 end
 
-local function removeReason(player, toolName, zoneId)
+local function removeReason(player, toolName, zoneName)
 	local ownership = playerOwnership[player]
 	if not ownership or not ownership[toolName] then return end
-	ownership[toolName][zoneId] = nil
+	ownership[toolName][zoneName] = nil
 end
 
 local function playerHasTool(player, toolName)
@@ -74,10 +76,18 @@ local function playerHasTool(player, toolName)
 end
 
 local function giveTool(player, toolName)
-	if not player or not player.Parent then return end
-	if playerHasTool(player, toolName) then return end
+	if not player or not player.Parent then
+		warn("[ToolService] giveTool aborted — player invalid")
+		return
+	end
+	if playerHasTool(player, toolName) then
+		return
+	end
 	local template = toolTemplates[toolName]
-	if not template then return end
+	if not template then
+		warn("[ToolService] giveTool aborted — no template loaded for:", toolName)
+		return
+	end
 	local clone   = template:Clone()
 	local backpack = player:WaitForChild("Backpack", 3)
 	if backpack then
@@ -125,16 +135,20 @@ local function cleanupPlayer(player)
 	end
 end
 
-PlayerEnteredZone.Event:Connect(function(player, zoneId)
-	for _, toolName in ipairs(ToolRegistry.GetToolsForZone(zoneId)) do
-		addReason(player, toolName, zoneId)
+PlayerEnteredZone.Event:Connect(function(player, zoneName, zoneType)
+	for _, toolName in ipairs(ToolRegistry.GetToolsForType(zoneType)) do
+		addReason(player, toolName, zoneName)
 		giveTool(player, toolName)
 	end
 end)
 
-PlayerLeftZone.Event:Connect(function(player, zoneId)
-	for _, toolName in ipairs(ToolRegistry.GetToolsForZone(zoneId)) do
-		removeReason(player, toolName, zoneId)
+-- Leaving doesn't need the zone's type: just drop this zone as a reason for
+-- every tool the player holds, and remove any tool left with no reason.
+PlayerLeftZone.Event:Connect(function(player, zoneName)
+	local ownership = playerOwnership[player]
+	if not ownership then return end
+	for toolName in pairs(ownership) do
+		removeReason(player, toolName, zoneName)
 		if not hasReason(player, toolName) then
 			removeTool(player, toolName)
 		end

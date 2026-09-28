@@ -5,4 +5,4 @@
     Place in: ServerScriptService/Services
 ]]
 local ServerScriptService = game:GetService("ServerScriptService")
-require(ServerScriptService:WaitForChild("Services"):WaitForChild("RepairService"))
+require(ServerScriptService:WaitForChild("Server"):WaitForChild("Services"):WaitForChild("RepairService"))

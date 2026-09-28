@@ -1,60 +1,41 @@
 --[[
     ToolRegistry (ModuleScript)
     ---------------------------
-    Maps zoneId -> { partName, tools }
-    Exposes helper methods used by ToolService, EngineCore, and EngineBillboard.
+    Maps zone TYPE -> { tools }.
+
+    A zone's identity is its part name in Workspace.EngineZones (unique per
+    bay, e.g. Mechanic_1 ... Mechanic_12). Its type comes from a "ZoneType"
+    string attribute on that part. Every bay of the same type gives the same
+    tools, so adding another bay is just adding a part — no registry change.
+
+    Zones no longer point at a specific engine. Any car with any engine can be
+    parked in any bay; which engine is "in" a zone is found by position (see
+    ZoneUtils.GetEngineInZone).
 ]]
 
-local Workspace = game:GetService("Workspace")
-
 local registry = {
-	engine_1 = { partName = "Beetle Engine", tools = {"InspectionTool", "Wrench"} },
-	engine_2 = { partName = "coyote 3.2",    tools = {"InspectionTool", "Wrench"} },
+	Mechanic = { tools = { "InspectionTool", "Wrench" } },
+	Paint    = { tools = {} }, -- add paint tools here once they exist
 }
 
 -- ── Registry Queries ──────────────────────────────────────────────────────────
 
-function registry.GetAllZoneIds()
-	local ids = {}
-	for zoneId, data in pairs(registry) do
+function registry.GetAllZoneTypes()
+	local types = {}
+	for zoneType, data in pairs(registry) do
 		if type(data) == "table" and data.tools then
-			table.insert(ids, zoneId)
+			table.insert(types, zoneType)
 		end
 	end
-	return ids
+	return types
 end
 
-function registry.GetToolsForZone(zoneId)
-	local entry = registry[zoneId]
-	return entry and entry.tools or {}
-end
-
-function registry.GetPartNameForZone(zoneId)
-	local entry = registry[zoneId]
-	return entry and entry.partName or nil
-end
-
--- ── Physical Instance Resolution ──────────────────────────────────────────────
-
---[[
-	Safely retrieves the physical Engine model from Workspace.Engines.
-	Replaces loose workspace searches across server and client scripts.
-]]
-function registry.GetEngineInstance(zoneId, timeout)
-	local partName = registry.GetPartNameForZone(zoneId)
-	if not partName then return nil end
-
-	local enginesFolder = Workspace:FindFirstChild("Engines")
-	if not enginesFolder then
-		warn("[ToolRegistry] 'Engines' folder is completely missing from Workspace!")
-		return nil
+function registry.GetToolsForType(zoneType)
+	local entry = zoneType and registry[zoneType]
+	if type(entry) == "table" and entry.tools then
+		return entry.tools
 	end
-
-	if timeout and timeout > 0 then
-		return enginesFolder:WaitForChild(partName, timeout)
-	else
-		return enginesFolder:FindFirstChild(partName)
-	end
+	return {}
 end
 
 return registry

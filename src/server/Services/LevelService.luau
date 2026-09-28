@@ -30,9 +30,8 @@ local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local ProfileManager = require(ServerScriptService:WaitForChild("Modules"):WaitForChild("ProfileManager"))
+local ProfileManager = require(ServerScriptService:Waitforchild("Server"):WaitForChild("Modules"):WaitForChild("ProfileManager"))
 local LevelCurve      = require(ReplicatedStorage:WaitForChild("Config"):WaitForChild("LevelCurve"))
-local ToolRegistry    = require(ReplicatedStorage:WaitForChild("Config"):WaitForChild("ToolRegistry"))
 local ZoneUtils       = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 
 -- ── XP Award Amounts ─────────────────────────────────────────────────────────
@@ -114,14 +113,14 @@ partInspected.OnServerEvent:Connect(function(player, engineName, partName)
 	local profile = ProfileManager.GetProfile(player)
 	if not profile then return end
 
-	-- Must actually be standing in a zone whose engine matches the one claimed.
-	local zoneId = ZoneUtils.GetZoneForPlayer(player)
-	if not zoneId then
+	-- Must be standing in a zone, with an engine parked in it that matches
+	-- the one claimed. The engine is found by position, not by name/config.
+	local engine, zone = ZoneUtils.GetEngineForPlayer(player)
+	if not zone then
 		warn("[LevelService] Inspect XP claim with no zone from:", player.Name)
 		return
 	end
 
-	local engine = ToolRegistry.GetEngineInstance(zoneId)
 	if not engine or engine.Name ~= engineName then
 		warn("[LevelService] Inspect XP claim engine mismatch from:", player.Name)
 		return

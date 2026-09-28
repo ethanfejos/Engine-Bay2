@@ -18,9 +18,9 @@ local ServerScriptService = game:GetService("ServerScriptService")
 -- Points at ProfileManager (wraps the real ProfileService library) rather
 -- than the old hand-rolled ProfileService.luau. Kept as the local name
 -- "ProfileService" so the ProfileService.GetProfile(...) call below is unchanged.
-local ProfileService   = require(ServerScriptService:WaitForChild("Modules"):WaitForChild("ProfileManager"))
-local InventoryService = require(ServerScriptService:WaitForChild("Services"):WaitForChild("InventoryService"))
-local LevelService      = require(ServerScriptService:WaitForChild("Services"):WaitForChild("LevelService"))
+local ProfileService   = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Modules"):WaitForChild("ProfileManager"))
+local InventoryService = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Services"):WaitForChild("InventoryService"))
+local LevelService      = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Services"):WaitForChild("LevelService"))
 
 -- ── Constants ─────────────────────────────────────────────────────────────────
 

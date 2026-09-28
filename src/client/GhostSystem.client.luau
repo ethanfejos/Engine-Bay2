@@ -22,7 +22,7 @@ local mouse   = player:GetMouse()
 local Modules       = ReplicatedStorage:WaitForChild("Modules")
 local EngineContext  = require(Modules:WaitForChild("EngineContext"))
 local HC             = require(Modules:WaitForChild("HighlightController"))
-local ToolRegistry   = require(ReplicatedStorage:WaitForChild("Config"):WaitForChild("ToolRegistry"))
+local ZoneUtils      = require(Modules:WaitForChild("ZoneUtils"))
 
 local remoteFolder   = ReplicatedStorage:WaitForChild("RemoteEvents")
 local reinstallEvent = remoteFolder:WaitForChild("ReinstallPart")
@@ -58,14 +58,15 @@ local selectedItemId   = nil
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
--- AFTER
+-- The engine a ghost belongs to is whatever is parked in the bay the player
+-- is standing in (any car, any engine) — not a fixed engine in a fixed folder.
+-- It only counts if its name matches the engine the selected part came from.
 local function getEngine(engineName)
-	local enginesFolder = workspace:FindFirstChild("Engines")
-	if not enginesFolder then
-		warn("[GhostSystem] 'Engines' folder is missing from Workspace!")
-		return nil
+	local engine = ZoneUtils.GetEngineForPlayer(player)
+	if engine and engine.Name == engineName then
+		return engine
 	end
-	return enginesFolder:FindFirstChild(engineName)
+	return nil
 end
 
 local function findTemplate(partName, engineName)

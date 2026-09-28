@@ -8,8 +8,8 @@
     - Fixed missing ToolRegistry require
 
     Other scripts it links to:
-    - Workspace.EngineZones: folder of zone BaseParts with ZoneId attributes
-    - ReplicatedStorage.Config.ToolRegistry: maps zoneId -> partName
+    - Workspace.EngineZones: folder of zone BaseParts (name = zone identity)
+    - ReplicatedStorage.Modules.ZoneUtils: finds the engine parked in a bay
     - ReplicatedStorage.RemoteEvents.RemovePart: fired by Wrench tool
     - ServerScriptService.Services.InventoryService: handles part inventory
 ]]
@@ -19,9 +19,8 @@ local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local HttpService         = game:GetService("HttpService")
 
-local ToolRegistry     = require(ReplicatedStorage:WaitForChild("Config"):WaitForChild("ToolRegistry"))
-local InventoryService = require(ServerScriptService:WaitForChild("Services"):WaitForChild("InventoryService"))
-local LevelService      = require(ServerScriptService:WaitForChild("Services"):WaitForChild("LevelService"))
+local InventoryService = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Services"):WaitForChild("InventoryService"))
+local LevelService      = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Services"):WaitForChild("LevelService"))
 local ZoneUtils         = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 
 -- ── Remote Events ─────────────────────────────────────────────────────────────
@@ -44,27 +43,6 @@ local partRemovingEvent = getOrCreate(remoteFolder, "RemoteEvent", "PartRemoving
 local WEAR_MIN          = 10
 local WEAR_MAX          = 100
 local REMOVE_ANIM_DELAY = 0.7
-
--- ── Zone & Engine Lookup ──────────────────────────────────────────────────────
--- Position-check math and per-player zone lookup live in ZoneUtils (shared)
--- now, instead of a separate copy here. The zoneParts cache and
--- registerZone/ChildAdded setup that used to back this were only ever used
--- by getZoneForPlayer, so they're gone too — ZoneUtils re-scans
--- Workspace.EngineZones directly.
-
-local function getEngineForZone(zoneId)
-	local config = ToolRegistry[zoneId]
-	if not config then return nil end
-
-	-- Look inside the "engines" folder instead of directly in workspace
-	local enginesFolder = workspace:FindFirstChild("Engines")
-	if enginesFolder then
-		return enginesFolder:FindFirstChild(config.partName)
-	else
-		warn("[EngineServer] Could not find the 'Engines' folder in Workspace!")
-		return nil
-	end
-end
 
 -- ── Dependency Check ──────────────────────────────────────────────────────────
 
@@ -123,13 +101,14 @@ removeEvent.OnServerEvent:Connect(function(player, model)
 		return
 	end
 
-	local zoneId = ZoneUtils.GetZoneForPlayer(player)
-	if not zoneId then
+	-- The engine is whatever is parked in the bay the player is standing in —
+	-- not a fixed engine tied to the zone.
+	local engine, zone = ZoneUtils.GetEngineForPlayer(player)
+	if not zone then
 		warn("[EngineServer] Out-of-zone remove attempt from:", player.Name)
 		return
 	end
 
-	local engine = getEngineForZone(zoneId)
 	if not engine or not model:IsDescendantOf(engine) then
 		warn("[EngineServer] Model not in player's zone engine from:", player.Name)
 		return

@@ -19,7 +19,7 @@ local UserInputService  = game:GetService("UserInputService")
 local player  = Players.LocalPlayer
 local mouse   = player:GetMouse()
 
-local Modules       = ReplicatedStorage:WaitForChild("Modules")
+local Modules       = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules")
 local EngineContext  = require(Modules:WaitForChild("EngineContext"))
 local HC             = require(Modules:WaitForChild("HighlightController"))
 local ZoneUtils      = require(Modules:WaitForChild("ZoneUtils"))

@@ -109,4 +109,17 @@ function ZoneUtils.GetEngineForPlayer(player)
 	return ZoneUtils.GetEngineInZone(zone), zone
 end
 
+-- The highest ancestor still directly under Workspace — i.e. the whole car,
+-- if the given instance is parked inside one, or just the instance itself if
+-- it's standalone. Shared by client (camera fade/collision) and server
+-- (physics stabilization on part removal, pickup-drop placement) so both
+-- agree on what "the car" is.
+function ZoneUtils.GetTopLevelAncestor(instance)
+	local current = instance
+	while current.Parent and current.Parent ~= workspace do
+		current = current.Parent
+	end
+	return current
+end
+
 return ZoneUtils

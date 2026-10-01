@@ -85,9 +85,28 @@ function ProfileManager.GetProfile(player)
 	return profiles[player]
 end
 
+-- Callbacks registered here run synchronously, in registration order, right
+-- before a leaving player's profile is released — the one guaranteed-safe
+-- place to write last-second state into profile.Data. Relying on a second,
+-- separate Players.PlayerRemoving connection elsewhere isn't safe for this:
+-- connection order between different scripts isn't something to depend on,
+-- and if it fired after this file's own release, profile.Data would already
+-- be gone. callback(player, profile) — profile is guaranteed non-nil here.
+local beforeReleaseCallbacks = {}
+
+function ProfileManager.OnBeforeRelease(callback)
+	table.insert(beforeReleaseCallbacks, callback)
+end
+
 Players.PlayerRemoving:Connect(function(player)
 	local profile = profiles[player]
 	if profile then
+		for _, callback in ipairs(beforeReleaseCallbacks) do
+			local ok, err = pcall(callback, player, profile)
+			if not ok then
+				warn("[ProfileManager] OnBeforeRelease callback errored:", err)
+			end
+		end
 		profile:Release()
 	end
 end)

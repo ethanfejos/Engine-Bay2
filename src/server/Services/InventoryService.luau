@@ -26,7 +26,8 @@ local ServerScriptService = game:GetService("ServerScriptService")
 -- than the old hand-rolled ProfileService.luau. Kept as the local name
 -- "ProfileService" so every ProfileService.GetProfile(...) call below is
 -- unchanged.
-local ZoneUtils      = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("ZoneUtils"))
+local ProfileService = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Modules"):WaitForChild("ProfileManager"))
+local ZoneUtils      = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 
 -- ── Remotes ───────────────────────────────────────────────────────────────────
 

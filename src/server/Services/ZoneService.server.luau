@@ -16,7 +16,7 @@ local RunService          = game:GetService("RunService")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local ZoneUtils = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("ZoneUtils"))
+local ZoneUtils = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 
 -- Parent events inside Services folder so ToolService can find them
 local servicesFolder    = ServerScriptService:WaitForChild("Server"):WaitForChild("Services")

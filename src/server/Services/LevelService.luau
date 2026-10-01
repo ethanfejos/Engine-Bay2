@@ -30,9 +30,9 @@ local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local ProfileManager = require(ServerScriptService:Waitforchild("Server"):WaitForChild("Modules"):WaitForChild("ProfileManager"))
-local LevelCurve      = require(ReplicatedStorage:WaitForChild("Config"):WaitForChild("LevelCurve"))
-local ZoneUtils       = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("ZoneUtils"))
+local ProfileManager = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Modules"):WaitForChild("ProfileManager"))
+local LevelCurve      = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("LevelCurve"))
+local ZoneUtils       = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 
 -- ── XP Award Amounts ─────────────────────────────────────────────────────────
 

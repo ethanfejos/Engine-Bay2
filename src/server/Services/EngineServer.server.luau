@@ -19,9 +19,41 @@ local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local HttpService         = game:GetService("HttpService")
 
-local InventoryService = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Services"):WaitForChild("InventoryService"))
 local LevelService      = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Services"):WaitForChild("LevelService"))
-local ZoneUtils         = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("ZoneUtils"))
+local PartPickupService = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Services"):WaitForChild("PartPickupService"))
+local ZoneUtils         = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
+
+-- ── Physics stabilization on removal ────────────────────────────────────────────
+-- Destroying a part removes real mass from a live, unanchored vehicle, and
+-- its suspension visibly reacts (the whole car lurches up, then resettles).
+-- Anchoring every part of the car across the moment of removal freezes the
+-- simulation so nothing can react, then each part is restored to whatever
+-- its OWN Anchored state actually was beforehand — not forced to false, in
+-- case the vehicle has its own anchoring already — so this can't change how
+-- the car behaves afterward, just prevents a visible pop at the instant of
+-- removal.
+local STABILIZE_SETTLE_TIME = 0.3
+
+local function stabilizeCarAcross(model, work)
+	local carRoot = ZoneUtils.GetTopLevelAncestor(model)
+	local parts = {}
+	for _, part in ipairs(carRoot:GetDescendants()) do
+		if part:IsA("BasePart") then
+			table.insert(parts, { part = part, wasAnchored = part.Anchored })
+			part.Anchored = true
+		end
+	end
+
+	work()
+
+	task.delay(STABILIZE_SETTLE_TIME, function()
+		for _, entry in ipairs(parts) do
+			if entry.part and entry.part.Parent then
+				entry.part.Anchored = entry.wasAnchored
+			end
+		end
+	end)
+end
 
 -- ── Remote Events ─────────────────────────────────────────────────────────────
 
@@ -160,11 +192,16 @@ removeEvent.OnServerEvent:Connect(function(player, model)
 
 	task.delay(REMOVE_ANIM_DELAY, function()
 		if model and model.Parent then
-			model:Destroy()
-			InventoryService.AddPart(player, modelName, wear, engineName, relativeData, itemId)
+			stabilizeCarAcross(model, function()
+				-- DropPart clones the model for the pickup object before this
+				-- destroys the original — the part no longer goes straight into
+				-- inventory, it has to be picked up from where it was removed.
+				PartPickupService.DropPart(player, model, modelName, wear, engineName, relativeData, itemId, zone.Name)
+				model:Destroy()
+			end)
 			LevelService.AddXP(player, LevelService.XP_AWARDS.remove, "remove")
-		end
-	end)
+	end
+end)
 end)
 
 -- ── Init ──────────────────────────────────────────────────────────────────────

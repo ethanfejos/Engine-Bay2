@@ -15,7 +15,7 @@ local RunService        = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player  = Players.LocalPlayer
-local Modules = ReplicatedStorage:WaitForChild("Modules")
+local Modules = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules")
 local UI      = ReplicatedStorage:WaitForChild("UI")
 
 local InspectionState = require(Modules:WaitForChild("InspectionState"))

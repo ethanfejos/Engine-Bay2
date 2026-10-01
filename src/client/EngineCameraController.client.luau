@@ -13,10 +13,11 @@ local UserInputService  = game:GetService("UserInputService")
 local ContextActionService = game:GetService("ContextActionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace         = game:GetService("Workspace")
+local TweenService      = game:GetService("TweenService")
 
 local player  = Players.LocalPlayer
 local camera  = Workspace.CurrentCamera
-local Modules = ReplicatedStorage:WaitForChild("Modules")
+local Modules = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules")
 
 local EngineContext    = require(Modules:WaitForChild("EngineContext"))
 local CharacterManager = require(Modules:WaitForChild("CharacterManager"))
@@ -48,6 +49,7 @@ local PAN_DAMP        = 6
 local PAN_BOX_HALF    = Vector3.new(6, 3, 6)  
 
 local EXIT_KEY = Enum.KeyCode.E
+local FADE_CHECK_INTERVAL = 0.2 -- how often the dynamic body-fade re-check runs
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 
@@ -71,6 +73,8 @@ local inputEndedConn   = nil
 local inputChangedConn = nil
 
 local exitEngineView
+local updateFade -- forward-declared: startOrbitLoop (defined above updateFade's
+                  -- real implementation) needs to call it each tick
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -141,8 +145,17 @@ end
 
 local function startOrbitLoop()
 	if renderConnection then renderConnection:Disconnect() end
+	local fadeCheckTimer = 0
 	renderConnection = RunService.RenderStepped:Connect(function(dt)
 		if not active then return end
+
+		fadeCheckTimer = fadeCheckTimer + dt
+		if fadeCheckTimer >= FADE_CHECK_INTERVAL then
+			fadeCheckTimer = 0
+			if currentEngine then
+				updateFade(currentEngine)
+			end
+		end
 
 		local keyPanX = 0
 		local keyPanZ = 0
@@ -274,12 +287,130 @@ local function tweenOrbitTo(targetPitch, targetDistance, duration, onComplete)
 	end
 end
 
+-- ── Body Panel Fading ─────────────────────────────────────────────────────────
+-- Parts immediately around the engine (hood, fenders, body panels) can sit
+-- between the camera and the engine and block the view. Fade them locally
+-- instead of hiding them outright, so it still feels like you're inside a
+-- car. Uses LocalTransparencyModifier — client-only and doesn't touch the
+-- real Transparency property, so it can't interfere with the visibility
+-- check above or with PartRemoveEffect/PartReinstallEffect, which do use
+-- real Transparency.
+
+local FADE_PADDING     = 6    -- studs added around the engine's bounding box (used for the initial/fallback catch)
+local FADE_LINE_WIDTH  = 4    -- width/height of the camera->engine "tube" checked each tick
+local FADE_AMOUNT      = 0.65 -- 0 = no change, 1 = fully invisible
+local FADE_TWEEN_TIME  = 0.2
+
+local fadedParts = {} -- [part] = true, currently faded — the live set, diffed every check
+
+local function isPointInBox(point, boxCFrame, boxSize)
+	local localPos = boxCFrame:PointToObjectSpace(point)
+	local half     = boxSize / 2
+	return math.abs(localPos.X) <= half.X
+		and math.abs(localPos.Y) <= half.Y
+		and math.abs(localPos.Z) <= half.Z
+end
+
+-- The highest ancestor still directly under Workspace — i.e. the whole car,
+-- if the engine is parked inside one, or just the engine itself if it's
+-- standalone. Scoping the scan to this instead of the whole workspace keeps
+-- it cheap and avoids ever touching another car/engine elsewhere in the map.
+-- getTopLevelAncestor lives in ZoneUtils now (shared with the server, which
+-- needs the same "find the whole car" logic for physics stabilization and
+-- pickup-drop placement).
+local getTopLevelAncestor = ZoneUtils.GetTopLevelAncestor
+
+-- Every part physically between the camera and the engine right now, using
+-- plain position math (not a physics query — GetPartBoundsInBox only finds
+-- parts with CanQuery on, and vehicle body panels are frequently pure visual
+-- shells with CanQuery/CanCollide both off). The check volume is a "tube"
+-- running from the camera to the engine, not a fixed box around the engine,
+-- so it naturally follows wherever the camera currently is as you orbit.
+local function getObstructingParts(engine)
+	local enginePos = engine:GetPivot().Position
+	local camPos    = camera.CFrame.Position
+	local diff      = enginePos - camPos
+	local dist      = diff.Magnitude
+	if dist < 1 then return {} end
+
+	local tubeCFrame = CFrame.new(camPos + diff * 0.5, enginePos)
+	local tubeSize   = Vector3.new(FADE_LINE_WIDTH, FADE_LINE_WIDTH, dist)
+
+	local carRoot = getTopLevelAncestor(engine)
+	local char    = player.Character
+	local result  = {}
+
+	for _, part in ipairs(carRoot:GetDescendants()) do
+		if not part:IsA("BasePart") then continue end
+		if part:IsDescendantOf(engine) then continue end
+		if char and part:IsDescendantOf(char) then continue end
+		if isPointInBox(part.Position, tubeCFrame, tubeSize) then
+			result[part] = true
+		end
+	end
+	return result
+end
+
+-- Re-checks what's currently obstructing and fades/restores only what
+-- changed since the last check — called on a timer while in engine view,
+-- not just once on entry.
+updateFade = function(engine)
+	local obstructing = getObstructingParts(engine)
+
+	for part in pairs(obstructing) do
+		if not fadedParts[part] then
+			fadedParts[part] = true
+			TweenService:Create(part, TweenInfo.new(FADE_TWEEN_TIME), { LocalTransparencyModifier = FADE_AMOUNT }):Play()
+		end
+	end
+
+	for part in pairs(fadedParts) do
+		if not obstructing[part] then
+			fadedParts[part] = nil
+			if part and part.Parent then
+				TweenService:Create(part, TweenInfo.new(FADE_TWEEN_TIME), { LocalTransparencyModifier = 0 }):Play()
+			end
+		end
+	end
+end
+
+-- One-shot catch-all used right on entry (padded box around the whole
+-- engine), so there's no gap before the first timed updateFade tick.
+local function fadeSurroundingBody(engine)
+	local engineCFrame, size = engine:GetBoundingBox()
+	local paddedSize = size + Vector3.new(FADE_PADDING, FADE_PADDING, FADE_PADDING) * 2
+
+	local carRoot = getTopLevelAncestor(engine)
+	local char    = player.Character
+
+	for _, part in ipairs(carRoot:GetDescendants()) do
+		if not part:IsA("BasePart") then continue end
+		if part:IsDescendantOf(engine) then continue end
+		if char and part:IsDescendantOf(char) then continue end
+		if not isPointInBox(part.Position, engineCFrame, paddedSize) then continue end
+
+		fadedParts[part] = true
+		TweenService:Create(part, TweenInfo.new(FADE_TWEEN_TIME), { LocalTransparencyModifier = FADE_AMOUNT }):Play()
+	end
+end
+
+local function restoreSurroundingBody()
+	for part in pairs(fadedParts) do
+		if part and part.Parent then
+			TweenService:Create(part, TweenInfo.new(0.25), { LocalTransparencyModifier = 0 }):Play()
+		end
+	end
+	table.clear(fadedParts)
+end
+
 -- ── Enter / Exit ──────────────────────────────────────────────────────────────
 
 exitEngineView = function()
 	if not active then return end
 	active        = false
 	currentEngine = nil
+
+	restoreSurroundingBody()
 
 	if entryTween then
 		entryTween()
@@ -316,6 +447,8 @@ local function enterEngineView(engine, prompt)
 	activePrompt  = prompt
 	pivotOffset   = Vector3.new()  
 	pivotTarget   = Vector3.new()  
+
+	fadeSurroundingBody(engine)
 
 	local engineCF = getEnginePivot(engine)
 	engineCenter   = engineCF.Position
@@ -411,6 +544,24 @@ local function wirePrompt(engine)
 	end
 
 	print("[EngineCameraController][DEBUG] Wired prompt successfully on:", engine:GetFullName())
+
+	-- The prompt should only be visible/usable while this engine is actually
+	-- parked inside a zone — and it must be disabled while this engine is the
+	-- one currently being viewed, or its own activation key (E, same as the
+	-- exit key) gets marked "processed" by Roblox and the exit handler below
+	-- never receives the keypress.
+	local heartbeatConn
+	heartbeatConn = RunService.Heartbeat:Connect(function()
+		if not trigger.Parent or not engine.Parent then
+			heartbeatConn:Disconnect()
+			return
+		end
+		local inZone = ZoneUtils.GetZoneForPosition(engine:GetPivot().Position) ~= nil
+		local shouldBeEnabled = inZone and not (active and currentEngine == engine)
+		if prompt.Enabled ~= shouldBeEnabled then
+			prompt.Enabled = shouldBeEnabled
+		end
+	end)
 
 	prompt.Triggered:Connect(function()
 		print("[EngineCameraController][DEBUG] Prompt.Triggered fired for:", engine:GetFullName())

@@ -14,7 +14,7 @@ local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local ToolRegistry = require(ReplicatedStorage:WaitForChild("Config")
+local ToolRegistry = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config")
 	:WaitForChild("ToolRegistry"))
 
 local toolsFolder = ReplicatedStorage:WaitForChild("Tools")

@@ -116,7 +116,7 @@ end
 -- agree on what "the car" is.
 function ZoneUtils.GetTopLevelAncestor(instance)
 	local current = instance
-	while current.Parent and current.Parent ~= workspace do
+	while current.Parent and current.Parent:IsA("Model") do
 		current = current.Parent
 	end
 	return current

@@ -42,21 +42,70 @@ local droppedParts = {}
 local DROP_SIDE_CLEARANCE = 3 -- studs clear of the car's own side, past its bounding box
 local DROP_GROUND_HEIGHT  = 1.5 -- studs above the car's lowest point, so it sits near the ground, not at body height
 
+-- Multiple parts dropped near the same car are spread out in a loose spiral
+-- (golden-angle, like seed packing) around the drop anchor instead of all
+-- landing on the exact same point.
+local SPREAD_RING_RADIUS = 1.1 -- studs of spread per "ring" of the spiral
+local GOLDEN_ANGLE       = math.rad(137.5)
+
 local PartPickupService = {}
+
+-- [zoneName] = { [slotIndex] = true }, tracks which spiral slots around a
+-- given bay's drop point are currently occupied, so a freed slot (part
+-- collected) gets reused rather than the spiral only ever growing outward.
+local activeSlotsByZone = {}
+
+local function claimSlot(zoneName)
+	local slots = activeSlotsByZone[zoneName]
+	if not slots then
+		slots = {}
+		activeSlotsByZone[zoneName] = slots
+	end
+	local index = 0
+	while slots[index] do
+		index += 1
+	end
+	slots[index] = true
+	return index
+end
+
+local function releaseSlot(zoneName, slotIndex)
+	local slots = activeSlotsByZone[zoneName]
+	if slots then
+		slots[slotIndex] = nil
+	end
+end
 
 -- Placed just outside the car's own side, near ground height — not near the
 -- removed part's own position, which is inside the body and invisible until
 -- you leave engine-view camera. Uses the car's own orientation (its CFrame's
 -- RightVector), so "outside" is correct regardless of which way the car is
 -- facing, and scales with the car's own size via its bounding box.
-local function getDropCFrame(sourceModel)
+--
+-- Also gives each drop a random yaw and a chance to land tipped onto its
+-- side, so a pile of parts doesn't look like a row of parts all standing
+-- perfectly upright.
+local function getDropCFrame(sourceModel, zoneName, slotIndex)
 	local carRoot = ZoneUtils.GetTopLevelAncestor(sourceModel)
 	local carCFrame, carSize = carRoot:GetBoundingBox()
 
 	local sideOffset   = carCFrame.RightVector * (carSize.X / 2 + DROP_SIDE_CLEARANCE)
 	local groundOffset = Vector3.new(0, -(carSize.Y / 2) + DROP_GROUND_HEIGHT, 0)
+	local anchorPos    = carCFrame.Position + sideOffset + groundOffset
 
-	return CFrame.new(carCFrame.Position + sideOffset + groundOffset)
+	local angle  = slotIndex * GOLDEN_ANGLE
+	local radius = SPREAD_RING_RADIUS * math.sqrt(slotIndex)
+	local spreadOffset = carCFrame.RightVector * (math.cos(angle) * radius)
+		+ carCFrame.LookVector * (math.sin(angle) * radius)
+
+	local yaw  = math.random() * math.pi * 2
+	local tilt = CFrame.new()
+	if math.random() < 0.5 then
+		local axis = (math.random(0, 1) == 0) and Vector3.xAxis or Vector3.zAxis
+		tilt = CFrame.fromAxisAngle(axis, math.rad(90))
+	end
+
+	return CFrame.new(anchorPos + spreadOffset) * CFrame.Angles(0, yaw, 0) * tilt
 end
 
 -- Actually adds the part to its owner's inventory and removes the dropped
@@ -67,6 +116,7 @@ function PartPickupService.CollectPart(itemId)
 	local drop = droppedParts[itemId]
 	if not drop then return end
 	droppedParts[itemId] = nil
+	releaseSlot(drop.zoneName, drop.slotIndex)
 
 	InventoryService.AddPart(drop.player, drop.modelName, drop.wear, drop.engineName, drop.relativeData, itemId)
 
@@ -100,7 +150,8 @@ function PartPickupService.DropPart(player, sourceModel, modelName, wear, engine
 		end
 	end
 
-	local dropCFrame = getDropCFrame(sourceModel)
+	local slotIndex = claimSlot(zoneName)
+	local dropCFrame = getDropCFrame(sourceModel, zoneName, slotIndex)
 	dropClone:PivotTo(dropCFrame)
 
 	local trigger         = Instance.new("Part")
@@ -129,6 +180,7 @@ function PartPickupService.DropPart(player, sourceModel, modelName, wear, engine
 		relativeData = relativeData,
 		zoneName     = zoneName,
 		instance     = dropClone,
+		slotIndex    = slotIndex,
 	}
 
 	prompt.Triggered:Connect(function(triggeringPlayer)
@@ -168,6 +220,7 @@ ProfileManager.OnBeforeRelease(function(player, profile)
 			if drop.instance and drop.instance.Parent then
 				drop.instance:Destroy()
 			end
+			releaseSlot(drop.zoneName, drop.slotIndex)
 			droppedParts[itemId] = nil
 		end
 	end

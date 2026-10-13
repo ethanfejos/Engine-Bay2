@@ -32,24 +32,51 @@ local ZoneUtils         = require(ReplicatedStorage:WaitForChild("Shared"):WaitF
 -- case the vehicle has its own anchoring already — so this can't change how
 -- the car behaves afterward, just prevents a visible pop at the instant of
 -- removal.
+--
+-- Overlapping removals on the same car (two clicks within the settle time,
+-- or two players) share ONE freeze: the original Anchored states are saved
+-- only by the first, and restored only when the last one finishes. Without
+-- this, the second removal would save "true" (the first one's freeze) as
+-- the original state and leave the whole car anchored for good.
 local STABILIZE_SETTLE_TIME = 0.3
+
+-- [carRoot] = { count = active removals, saved = { [part] = wasAnchored } }
+local activeFreezes = {}
 
 local function stabilizeCarAcross(model, work)
 	local carRoot = ZoneUtils.GetTopLevelAncestor(model)
-	local parts = {}
+
+	local freeze = activeFreezes[carRoot]
+	if not freeze then
+		freeze = { count = 0, saved = {} }
+		activeFreezes[carRoot] = freeze
+	end
+	freeze.count += 1
+
 	for _, part in ipairs(carRoot:GetDescendants()) do
-		if part:IsA("BasePart") then
-			table.insert(parts, { part = part, wasAnchored = part.Anchored })
+		-- Only record a part the first time this freeze sees it; anything
+		-- already in `saved` is currently anchored by us, not by the car.
+		if part:IsA("BasePart") and freeze.saved[part] == nil then
+			freeze.saved[part] = part.Anchored
 			part.Anchored = true
 		end
 	end
 
-	work()
+	-- pcall so an error inside work() can't skip the unfreeze below and
+	-- leave the car anchored.
+	local ok, err = pcall(work)
+	if not ok then
+		warn("[EngineServer] Error during part removal:", err)
+	end
 
 	task.delay(STABILIZE_SETTLE_TIME, function()
-		for _, entry in ipairs(parts) do
-			if entry.part and entry.part.Parent then
-				entry.part.Anchored = entry.wasAnchored
+		freeze.count -= 1
+		if freeze.count > 0 then return end -- another removal still needs the freeze
+
+		activeFreezes[carRoot] = nil
+		for part, wasAnchored in pairs(freeze.saved) do
+			if part.Parent then
+				part.Anchored = wasAnchored
 			end
 		end
 	end)
@@ -192,6 +219,12 @@ removeEvent.OnServerEvent:Connect(function(player, model)
 
 	task.delay(REMOVE_ANIM_DELAY, function()
 		if model and model.Parent then
+			-- Removal XP is paid once per physical part: the first time it
+			-- comes off a car. InventoryService marks every reinstalled part
+			-- with RemovalXpPaid, so remove → reinstall → remove can't farm
+			-- XP. Read before DropPart/Destroy, while the model still exists.
+			local removalXpAlreadyPaid = model:GetAttribute("RemovalXpPaid") == true
+
 			stabilizeCarAcross(model, function()
 				-- DropPart clones the model for the pickup object before this
 				-- destroys the original — the part no longer goes straight into
@@ -199,7 +232,9 @@ removeEvent.OnServerEvent:Connect(function(player, model)
 				PartPickupService.DropPart(player, model, modelName, wear, engineName, relativeData, itemId, zone.Name)
 				model:Destroy()
 			end)
-			LevelService.AddXP(player, LevelService.XP_AWARDS.remove, "remove")
+			if not removalXpAlreadyPaid then
+				LevelService.AddXP(player, LevelService.XP_AWARDS.remove, "remove")
+			end
 	end
 end)
 end)

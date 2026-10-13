@@ -15,14 +15,10 @@
                        (e.g. on join), mirrors LevelService's RequestXp /
                        InventoryService's RequestInventory pattern
 
-    Also pushes once on its own shortly after the player's character
-    spawns — not just reacting to RequestMoney — because the profile load
-    InventoryService kicks off on PlayerAdded can still be in flight when
-    LevelUI's RequestMoney fires on join. If that race loses, RequestMoney
-    silently does nothing (profile not loaded yet = nothing to send) and
-    the client is left on its hardcoded placeholder forever, with no
-    error anywhere. Same race, same fix InventoryService already uses for
-    its own initial push (CharacterAdded + a short wait).
+    Also pushes on its own the moment the player's profile finishes
+    loading (ProfileManager.OnProfileLoaded) — not just reacting to
+    RequestMoney — because LevelUI's RequestMoney usually fires on join
+    before the DataStore load is done, and then gets nothing back.
 
     Other scripts call MoneyService.AddMoney / TrySpend directly, the same
     way RepairService calls LevelService.AddXP — those are already
@@ -33,7 +29,6 @@
     Place in: ServerScriptService/Services
 ]]
 
-local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
@@ -130,11 +125,8 @@ end)
 -- stale/placeholder balance forever if their own RequestMoney happened to
 -- fire before the profile finished loading.
 
-Players.PlayerAdded:Connect(function(player)
-	player.CharacterAdded:Connect(function()
-		task.wait(1)
-		pushMoneyToClient(player)
-	end)
+ProfileManager.OnProfileLoaded(function(player)
+	pushMoneyToClient(player)
 end)
 
 return MoneyService

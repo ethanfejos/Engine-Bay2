@@ -42,9 +42,19 @@ local function subscribe(listeners, fn)
 	end
 end
 
--- Walk up from a part looking for an Inspectable model within _engine
+-- Walk up from a part looking for an Inspectable model within _engine.
+-- Returns model, isGhost. Only parts INSIDE the engine count: without this
+-- check the walk climbed past the engine to the top of the game and could
+-- return dropped parts or another car's parts. isGhost = true when the
+-- part belongs to a GhostSystem reinstall ghost.
 local function getEngineSubModel(part)
+	if not _engine or not part or not part:IsDescendantOf(_engine) then
+		return nil, false
+	end
 	while part and part ~= _engine do
+		if part:GetAttribute("IsGhost") then
+			return nil, true
+		end
 		if part:IsA("Model") then
 			-- Check bolt first so it takes priority over parent model
 			if part:GetAttribute("IsBolt") then
@@ -119,9 +129,10 @@ end
 
 RunService.RenderStepped:Connect(function()
 	if not _inEngineView then return end
-	local target = mouse.Target
-	local model  = target and getEngineSubModel(target)
-	if not model then
+	local model, onGhost = getEngineSubModel(mouse.Target)
+	-- Hovering the ghost means "nothing" — no fallback, or the nearest
+	-- real part behind the ghost would be targeted instead.
+	if not model and not onGhost then
 		model = getFallbackTarget()
 	end
 	if model ~= _currentTarget then

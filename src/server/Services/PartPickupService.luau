@@ -157,6 +157,18 @@ function PartPickupService.DropPart(player, sourceModel, modelName, wear, engine
 		end
 	end
 
+	-- A dropped part is a pickup, not an engine part: remove the attributes
+	-- that make EngineContext, the Wrench and the inspection tool treat it as
+	-- one (hovering it in engine view used to target it).
+	local function stripPartAttributes(inst)
+		inst:SetAttribute("Inspectable", nil)
+		inst:SetAttribute("IsBolt", nil)
+	end
+	stripPartAttributes(dropClone)
+	for _, inst in ipairs(dropClone:GetDescendants()) do
+		stripPartAttributes(inst)
+	end
+
 	-- Fixed spot, no physics, per design: anchored, non-collidable so it
 	-- can't block movement in a tight engine bay.
 	for _, part in ipairs(dropClone:GetDescendants()) do

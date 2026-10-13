@@ -18,7 +18,6 @@
     Place in: ServerScriptService/Services
 ]]
 
-local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
@@ -110,18 +109,11 @@ end
 
 -- ── Player Join/Leave ─────────────────────────────────────────────────────────
 
-Players.PlayerAdded:Connect(function(player)
-	local profile = ProfileService.LoadProfile(player)
-	if not profile then
-		-- LoadProfile already kicked the player in this case (session
-		-- couldn't be claimed, or they left before loading finished).
-		return
-	end
-	-- Send inventory to client once character loads
-	player.CharacterAdded:Connect(function()
-		task.wait(1)
-		inventoryUpdated:FireClient(player, profile.Data.inventory)
-	end)
+-- ProfileManager loads every player's profile itself; this just pushes the
+-- inventory to the client the moment it's ready (replaces the old
+-- CharacterAdded + task.wait(1) guess, which lost the race on slow loads).
+ProfileService.OnProfileLoaded(function(player, profile)
+	inventoryUpdated:FireClient(player, profile.Data.inventory)
 end)
 
 -- Client requesting inventory (e.g. on rejoin)
@@ -134,11 +126,23 @@ end)
 
 -- ── Reinstall Handler ─────────────────────────────────────────────────────────
 
+-- Every rejected reinstall tells the client why AND resends the real
+-- inventory. GhostSystem hides the part from the list optimistically when
+-- you click its ghost; without this resend, a rejected part stayed hidden
+-- until rejoin.
+--   status "BLOCKED" -> detail = name of the part that must go back in first
+--   status "FAILED"  -> detail = short reason, for Output / future UI
+local function rejectReinstall(player, status, detail)
+	reinstallEvent:FireClient(player, status, detail)
+	inventoryUpdated:FireClient(player, InventoryService.GetInventory(player))
+end
+
 reinstallEvent.OnServerEvent:Connect(function(player, itemId)
 	-- Validate player has this item by id
 	local hasPart, item = InventoryService.HasPartById(player, itemId)
 	if not hasPart then
 		warn("[InventoryService] Player", player.Name, "tried to reinstall item they don't have:", itemId)
+		rejectReinstall(player, "FAILED", "not in inventory")
 		return
 	end
 
@@ -150,17 +154,20 @@ reinstallEvent.OnServerEvent:Connect(function(player, itemId)
 	local engine, zone = ZoneUtils.GetEngineForPlayer(player)
 	if not zone then
 		warn("[InventoryService] Player not in zone:", player.Name)
+		rejectReinstall(player, "FAILED", "not in a bay")
 		return
 	end
 
 	if not engine or engine.Name ~= engineName then
 		warn("[InventoryService] Engine mismatch for:", player.Name)
+		rejectReinstall(player, "FAILED", "wrong engine")
 		return
 	end
 
 	-- Check part doesn't already exist in engine
 	if engine:FindFirstChild(partName) then
 		warn("[InventoryService] Part already exists in engine:", partName)
+		rejectReinstall(player, "FAILED", "already installed")
 		return
 	end
 
@@ -172,11 +179,13 @@ reinstallEvent.OnServerEvent:Connect(function(player, itemId)
 	local engineFolder   = templateFolder:FindFirstChild(engineName)
 	if not engineFolder then
 		warn("[InventoryService] No template folder for engine:", engineName)
+		rejectReinstall(player, "FAILED", "no template")
 		return
 	end
 	local template = engineFolder:FindFirstChild(partName)
 	if not template then
 		warn("[InventoryService] No template found for:", partName)
+		rejectReinstall(player, "FAILED", "no template")
 		return
 	end
 
@@ -189,7 +198,7 @@ reinstallEvent.OnServerEvent:Connect(function(player, itemId)
 			req = req:match("^%s*(.-)%s*$")
 			if not engine:FindFirstChild(req) then
 				-- Required part is not in engine yet — must reinstall it first
-				reinstallEvent:FireClient(player, "BLOCKED", req)
+				rejectReinstall(player, "BLOCKED", req)
 				return
 			end
 		end
@@ -198,6 +207,9 @@ reinstallEvent.OnServerEvent:Connect(function(player, itemId)
 	-- All checks passed — clone template into engine with original wear and position
 	local clone = template:Clone()
 	clone:SetAttribute("Wear", item.wear)
+	-- This part has already paid removal XP once (that's how it got into the
+	-- inventory), so removing it again pays nothing. See EngineServer.
+	clone:SetAttribute("RemovalXpPaid", true)
 	clone.Parent = engine
 
 	-- Apply relative CFrame to position correctly relative to engine pivot

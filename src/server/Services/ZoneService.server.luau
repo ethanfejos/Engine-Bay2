@@ -1,14 +1,28 @@
 --[[
     ZoneService (Script)
     --------------------
-    - Creates ZoneServiceEvents inside ServerScriptService/Services
-    - Fires PlayerEnteredZone / PlayerLeftZone with (player, zoneName, zoneType)
-    - Uses Touched for entry, Heartbeat position check for exit
-      (TouchEnded is unreliable for zone detection)
+    Tracks which zone (repair bay) each player is standing in and fires:
+    - PlayerEnteredZone (player, zoneName, zoneType)
+    - PlayerLeftZone    (player, zoneName, zoneType)
+    as BindableEvents in ServerScriptService.Server.Services.ZoneServiceEvents.
+
+    How a player's zone is decided:
+    - Polled POLL_RATE times a second from the HumanoidRootPart's position,
+      using the same ZoneUtils lookup the server's own checks use
+      (EngineServer, InventoryService, LevelService), so "in a zone" means
+      the same thing everywhere. No Touched events: a foot or hand
+      touching the zone edge no longer counts as entering.
+    - Tracked per PLAYER, not per character, so a respawn can't silently
+      drop the player's state.
+    - A dead player is in no zone. Leave fires the moment they die, again
+      if their character is removed, and when they leave the game — so
+      tools are taken back and dropped parts are auto-collected.
 
     Zones are BaseParts directly under Workspace.EngineZones:
     - zoneName = the part's Name — must be unique (Mechanic_1, Mechanic_2, ...)
     - zoneType = its "ZoneType" string attribute ("Mechanic", "Paint", ...)
+    Overlapping zones aren't supported: where two overlap, the first one
+    ZoneUtils finds wins.
 ]]
 
 local Players             = game:GetService("Players")
@@ -18,7 +32,13 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local ZoneUtils = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 
--- Parent events inside Services folder so ToolService can find them
+-- ── Config ────────────────────────────────────────────────────────────────────
+
+local POLL_RATE = 10 -- checks per second; enter/leave lag is at most 1/POLL_RATE s
+
+-- ── Events ────────────────────────────────────────────────────────────────────
+
+-- Parent events inside Services folder so ToolService / PartPickupService can find them
 local servicesFolder    = ServerScriptService:WaitForChild("Server"):WaitForChild("Services")
 local eventsFolder      = Instance.new("Folder")
 eventsFolder.Name       = "ZoneServiceEvents"
@@ -34,66 +54,107 @@ PlayerLeftZone.Parent        = eventsFolder
 
 local zonesFolder = workspace:WaitForChild("EngineZones")
 
--- [char] = zoneName currently occupied
+-- ── State ─────────────────────────────────────────────────────────────────────
+
+-- [player] = { name = zoneName, zoneType = zoneType } for the zone they're in.
+-- zoneType is stored so leave can still report it if the zone part was
+-- removed in the meantime.
 local playerZone = {}
 
--- [zoneName] = zone part, for every registered zone
+-- [zoneName] = zone part, for every registered (uniquely named) zone
 local zonesByName = {}
 
--- On Touched, fire entry if not already in this zone
-local function onTouched(zone, hit)
-	local char = hit.Parent
-	if not char then return end
-	local player = Players:GetPlayerFromCharacter(char)
-	if not player then return end
+-- Moves a player into newZone (a registered zone part) or out of all zones
+-- (newZone = nil). Fires leave for the old zone, then enter for the new one.
+-- Does nothing if they're already in that zone.
+local function setPlayerZone(player, newZone)
+	local current = playerZone[player]
+	local newName = newZone and newZone.Name or nil
+	if (current and current.name) == newName then return end
 
-	local zoneName = zone.Name
-	if playerZone[char] == zoneName then return end
-
-	-- Fire leave for previous zone if any
-	local previous = playerZone[char]
-	if previous then
-		local previousZone = zonesByName[previous]
-		PlayerLeftZone:Fire(player, previous, ZoneUtils.GetZoneType(previousZone))
+	if current then
+		playerZone[player] = nil
+		PlayerLeftZone:Fire(player, current.name, current.zoneType)
 	end
 
-	playerZone[char] = zoneName
-	local zoneType = ZoneUtils.GetZoneType(zone)
-	print("[ZoneService] Entered:", player.Name, zoneName, "(" .. tostring(zoneType) .. ")")
-	PlayerEnteredZone:Fire(player, zoneName, zoneType)
+	if newZone then
+		local zoneType = ZoneUtils.GetZoneType(newZone)
+		playerZone[player] = { name = newName, zoneType = zoneType }
+		print("[ZoneService] Entered:", player.Name, newName, "(" .. tostring(zoneType) .. ")")
+		PlayerEnteredZone:Fire(player, newName, zoneType)
+	end
 end
 
--- Heartbeat checks if players have left their zone
-RunService.Heartbeat:Connect(function()
-	for char, zoneName in pairs(playerZone) do
-		local player = Players:GetPlayerFromCharacter(char)
-		if not player then
-			playerZone[char] = nil
-			continue
-		end
-		local hrp = char:FindFirstChild("HumanoidRootPart")
-		if not hrp then continue end
+-- The registered zone a player is standing in right now, or nil if they're
+-- outside every zone, dead, or have no character.
+local function findZoneForPlayer(player)
+	local char = player.Character
+	if not char then return nil end
 
-		local zone = zonesByName[zoneName]
-		local stillInside = zone ~= nil
-			and zone.Parent ~= nil
-			and ZoneUtils.IsPositionInZone(hrp.Position, zone)
+	local humanoid = char:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid.Health <= 0 then return nil end
 
-		if not stillInside then
-			playerZone[char] = nil
-			PlayerLeftZone:Fire(player, zoneName, ZoneUtils.GetZoneType(zone))
-		end
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	if not hrp then return nil end
+
+	local zone = ZoneUtils.GetZonePartForPosition(hrp.Position)
+	-- Ignore duplicate-named zones that registerZone refused.
+	if zone and zonesByName[zone.Name] == zone then
+		return zone
+	end
+	return nil
+end
+
+-- ── Polling ───────────────────────────────────────────────────────────────────
+
+local POLL_INTERVAL = 1 / POLL_RATE
+local sincePoll     = 0
+
+RunService.Heartbeat:Connect(function(dt)
+	sincePoll += dt
+	if sincePoll < POLL_INTERVAL then return end
+	sincePoll = 0
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		setPlayerZone(player, findZoneForPlayer(player))
 	end
 end)
+
+-- ── Death / respawn / leaving ─────────────────────────────────────────────────
+-- Fire leave immediately rather than waiting for the next poll, so tools and
+-- dropped parts are handled even if the character is gone by then.
+
+local function onCharacterAdded(player, char)
+	local humanoid = char:WaitForChild("Humanoid", 10)
+	if humanoid then
+		humanoid.Died:Connect(function()
+			setPlayerZone(player, nil)
+		end)
+	end
+end
+
+local function onPlayerAdded(player)
+	player.CharacterAdded:Connect(function(char)
+		onCharacterAdded(player, char)
+	end)
+	player.CharacterRemoving:Connect(function()
+		setPlayerZone(player, nil)
+	end)
+	if player.Character then
+		task.spawn(onCharacterAdded, player, player.Character)
+	end
+end
+
+Players.PlayerAdded:Connect(onPlayerAdded)
+for _, player in ipairs(Players:GetPlayers()) do
+	onPlayerAdded(player)
+end
 
 Players.PlayerRemoving:Connect(function(player)
-	local char = player.Character
-	local zoneName = char and playerZone[char]
-	if zoneName then
-		PlayerLeftZone:Fire(player, zoneName, ZoneUtils.GetZoneType(zonesByName[zoneName]))
-		playerZone[char] = nil
-	end
+	setPlayerZone(player, nil)
 end)
+
+-- ── Zone registration ─────────────────────────────────────────────────────────
 
 local function registerZone(zone)
 	if not zone:IsA("BasePart") then return end
@@ -112,8 +173,6 @@ local function registerZone(zone)
 
 	zonesByName[zone.Name] = zone
 	print("[ZoneService] Registered zone:", zone.Name, "type:", tostring(zoneType))
-	zone.CanTouch = true
-	zone.Touched:Connect(function(hit) onTouched(zone, hit) end)
 end
 
 for _, zone in ipairs(zonesFolder:GetChildren()) do
@@ -122,6 +181,7 @@ end
 
 zonesFolder.ChildAdded:Connect(registerZone)
 
+-- Players inside a removed zone get their leave on the next poll.
 zonesFolder.ChildRemoved:Connect(function(zone)
 	if zonesByName[zone.Name] == zone then
 		zonesByName[zone.Name] = nil

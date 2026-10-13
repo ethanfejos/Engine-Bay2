@@ -91,31 +91,39 @@ end
 
 -- ── Start Repair ──────────────────────────────────────────────────────────────
 
+-- Every rejected StartRepair answers with progress -1 (the same "cancelled"
+-- signal used when you walk away mid-repair), so RepairUI resets its button
+-- instead of sitting on "..." forever.
+local function rejectRepair(player, itemId, reason)
+	warn("[RepairService] Repair rejected for", player.Name, "-", reason)
+	repairProgress:FireClient(player, itemId, -1)
+end
+
 startRepairEvent.OnServerEvent:Connect(function(player, itemId)
 	-- Cancel any existing repair
 	cancelRepair(player)
 
 	-- Validate near workbench
 	if not isNearWorkbench(player) then
-		warn("[RepairService] Player not near workbench:", player.Name)
+		rejectRepair(player, itemId, "not near workbench")
 		return
 	end
 
 	-- Find item in inventory
 	local hasPart, item = InventoryService.HasPartById(player, itemId)
 	if not hasPart then
-		warn("[RepairService] Item not found in inventory:", itemId)
+		rejectRepair(player, itemId, "item not in inventory")
 		return
 	end
 
 	-- Validate wear
 	if item.wear <= MIN_REPAIRABLE_WEAR then
-		warn("[RepairService] Part wear too low to repair:", item.wear)
+		rejectRepair(player, itemId, "wear too low to repair (" .. tostring(item.wear) .. ")")
 		return
 	end
 
 	if item.wear >= 100 then
-		warn("[RepairService] Part already at full wear")
+		rejectRepair(player, itemId, "already at full condition")
 		return
 	end
 
@@ -144,11 +152,21 @@ startRepairEvent.OnServerEvent:Connect(function(player, itemId)
 		-- Repair complete — update wear in inventory
 		local profile = ProfileService.GetProfile(player)
 		if profile then
+			local found = false
 			for _, invItem in ipairs(profile.Data.inventory) do
 				if invItem.id == itemId then
 					invItem.wear = 100
+					found = true
 					break
 				end
+			end
+
+			-- The part left the inventory mid-repair (e.g. it was
+			-- reinstalled) — nothing was repaired, so no completion or XP.
+			if not found then
+				rejectRepair(player, itemId, "item left inventory during repair")
+				activeRepairs[player] = nil
+				return
 			end
 
 			-- Fire updated inventory and completion event

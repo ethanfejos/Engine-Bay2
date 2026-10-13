@@ -39,8 +39,9 @@ local inWorkbenchView  = false
 local repairing        = false
 local currentItemId    = nil
 local currentInventory = {}
-local partOnBench      = nil 
-local progressFill     = nil 
+local partOnBench      = nil
+local progressFill     = nil
+local repairButton     = nil
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -76,6 +77,7 @@ local function clearBench()
 
 	partOnBench = nil
 	progressFill = nil
+	repairButton = nil
 end
 
 -- ── Build 3D World UI ─────────────────────────────────────────────────────────
@@ -130,6 +132,7 @@ local function buildBillboard(itemId, partName, wear)
 	btn.TextColor3 = WHITE
 	btn.TextSize = 45
 	Instance.new("UICorner", btn)
+	repairButton = btn
 
 	btn.MouseButton1Click:Connect(function()
 		if repairing then return end
@@ -226,7 +229,14 @@ selectionChangedEvent.Event:Connect(function(itemId, partName, engineName)
 end)
 
 repairProgress.OnClientEvent:Connect(function(itemId, progress)
-	if progress < 0 then repairing = false; return end
+	-- -1 = the server rejected or cancelled the repair: unlock the button
+	-- and clear the progress bar so it can be tried again.
+	if progress < 0 then
+		repairing = false
+		if repairButton then repairButton.Text = "REPAIR" end
+		if progressFill then progressFill.Size = UDim2.new(0, 0, 1, 0) end
+		return
+	end
 	if progressFill then
 		TweenService:Create(progressFill, TweenInfo.new(0.1), {Size = UDim2.new(progress, 0, 1, 0)}):Play()
 	end

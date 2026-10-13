@@ -101,6 +101,13 @@ requestXp.OnServerEvent:Connect(function(player)
 	pushXpToClient(player)
 end)
 
+-- LevelUI's RequestXp usually arrives before the profile has loaded and gets
+-- nothing back, which left the bar at "LEVEL 1" until the first XP gain.
+-- Push as soon as the profile is ready instead.
+ProfileManager.OnProfileLoaded(function(player)
+	pushXpToClient(player)
+end)
+
 -- ── Inspect Award ─────────────────────────────────────────────────────────────
 -- InspectionUI fires this once, client-side, the moment a part is newly
 -- marked inspected. Everything here exists to stop that being trusted

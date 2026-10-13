@@ -16,7 +16,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player  = Players.LocalPlayer
 local Modules = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules")
-local UI      = ReplicatedStorage:WaitForChild("UI")
+local UI      = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("UI")
 
 local InspectionState = require(Modules:WaitForChild("InspectionState"))
 local EngineContext   = require(Modules:WaitForChild("EngineContext"))

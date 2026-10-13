@@ -113,7 +113,19 @@ local function showGhost(partName, engineName, engine, relativeData)
 	local ghost = template:Clone()
 	ghost.Name  = partName .. "_Ghost"
 
+	-- The ghost sits inside the engine model, so it must not look like a
+	-- real engine part: without these attributes EngineContext won't target
+	-- it, and the Wrench/inspection tool can't act on it.
+	ghost:SetAttribute("Inspectable", nil)
+	ghost:SetAttribute("IsBolt", nil)
+	-- EngineContext also stops at IsGhost, so hovering the ghost targets
+	-- nothing (not the nearest real part behind it) and a Wrench click
+	-- meant for the ghost can't remove some other part.
+	ghost:SetAttribute("IsGhost", true)
+
 	for _, desc in ipairs(ghost:GetDescendants()) do
+		desc:SetAttribute("Inspectable", nil)
+		desc:SetAttribute("IsBolt", nil)
 		if desc:IsA("BasePart") then
 			desc.Transparency = GHOST_TRANSPARENCY
 			desc.CanCollide   = false
@@ -180,10 +192,15 @@ end)
 
 -- ── Listen for server BLOCKED response ───────────────────────────────────────
 
-reinstallEvent.OnClientEvent:Connect(function(status, blockedBy)
-	if status ~= "BLOCKED" then return end
-	-- Could show a message here — "reinstall X first"
-	warn("[GhostSystem] Reinstall blocked by:", blockedBy)
+-- The server also resends the full inventory on any rejection, so the part
+-- this script hid optimistically reappears in InventoryUI by itself.
+reinstallEvent.OnClientEvent:Connect(function(status, detail)
+	if status == "BLOCKED" then
+		-- Could show a message here — "reinstall X first"
+		warn("[GhostSystem] Reinstall blocked — reinstall first:", detail)
+	elseif status == "FAILED" then
+		warn("[GhostSystem] Reinstall failed:", detail)
+	end
 end)
 
 -- ── Refresh ghost when engine view changes ────────────────────────────────────

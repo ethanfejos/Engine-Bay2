@@ -4,12 +4,15 @@
     Always-visible level + XP bar in the bottom-left corner, plus a
     level-up popup banner. Purely a display — all XP math and awarding
     happens server-side in LevelService; this just renders what it's told.
+    Also renders the money balance next to it, same "just display what
+    the server says" approach, driven by MoneyService.
 
-    - XpUpdated  (server -> client): updates the bar/label, tweened
-    - LeveledUp  (server -> client): triggers the popup + a pulse on the
-      level label
-    - Fires RequestXp on join to get the current values immediately,
-      same pattern InventoryUI uses for RequestInventory.
+    - XpUpdated     (server -> client): updates the bar/label, tweened
+    - LeveledUp     (server -> client): triggers the popup + a pulse on
+      the level label
+    - MoneyUpdated  (server -> client): updates the money label
+    - Fires RequestXp and RequestMoney on join to get current values
+      immediately, same pattern InventoryUI uses for RequestInventory.
 ]]
 
 local Players           = game:GetService("Players")
@@ -19,10 +22,12 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local remoteFolder    = ReplicatedStorage:WaitForChild("RemoteEvents")
-local xpUpdatedEvent  = remoteFolder:WaitForChild("XpUpdated")
-local leveledUpEvent  = remoteFolder:WaitForChild("LeveledUp")
-local requestXpEvent  = remoteFolder:WaitForChild("RequestXp")
+local remoteFolder      = ReplicatedStorage:WaitForChild("RemoteEvents")
+local xpUpdatedEvent    = remoteFolder:WaitForChild("XpUpdated")
+local leveledUpEvent    = remoteFolder:WaitForChild("LeveledUp")
+local requestXpEvent    = remoteFolder:WaitForChild("RequestXp")
+local moneyUpdatedEvent = remoteFolder:WaitForChild("MoneyUpdated")
+local requestMoneyEvent = remoteFolder:WaitForChild("RequestMoney")
 
 -- ── Palette (matches GUIBuilder's white/Gotham HUD style) ───────────────────────
 
@@ -30,6 +35,7 @@ local WHITE   = Color3.fromRGB(255, 255, 255)
 local DIM     = Color3.fromRGB(200, 200, 200)
 local BAR_BG  = Color3.fromRGB(40, 40, 40)
 local GREEN   = Color3.fromRGB(0, 200, 120) -- matches RepairUI's accent
+local GOLD    = Color3.fromRGB(255, 205, 90) -- money accent
 
 -- ── Build GUI ─────────────────────────────────────────────────────────────────
 
@@ -43,7 +49,7 @@ local container = Instance.new("Frame")
 container.Name = "LevelContainer"
 container.AnchorPoint = Vector2.new(0, 1)
 container.Position = UDim2.new(0, 24, 1, -24)
-container.Size = UDim2.new(0, 220, 0, 46)
+container.Size = UDim2.new(0, 220, 0, 68)
 container.BackgroundTransparency = 1
 container.Parent = screenGui
 
@@ -87,6 +93,19 @@ fill.BorderSizePixel = 0
 fill.Size = UDim2.new(0, 0, 1, 0)
 fill.Parent = track
 Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+
+-- Money, right next to the XP bar — just the running total, no breakdown.
+local moneyLabel = Instance.new("TextLabel")
+moneyLabel.Name = "MoneyLabel"
+moneyLabel.BackgroundTransparency = 1
+moneyLabel.Size = UDim2.new(1, 0, 0, 20)
+moneyLabel.Position = UDim2.new(0, 0, 0, 42)
+moneyLabel.Font = Enum.Font.GothamBold
+moneyLabel.TextSize = 16
+moneyLabel.TextColor3 = GOLD
+moneyLabel.TextXAlignment = Enum.TextXAlignment.Left
+moneyLabel.Text = "$0"
+moneyLabel.Parent = container
 
 -- ── Level-up popup ────────────────────────────────────────────────────────────
 
@@ -134,6 +153,17 @@ local function pulseLevelLabel()
 	end)
 end
 
+-- ── Formatting ────────────────────────────────────────────────────────────────
+
+-- "100000" -> "100,000" — thousands separators, no decimals (money is
+-- always a whole-dollar amount here).
+local function formatMoney(amount)
+	local sign = amount < 0 and "-" or ""
+	local digits = tostring(math.abs(math.floor(amount)))
+	local withCommas = digits:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+	return sign .. "$" .. withCommas
+end
+
 -- ── Event handlers ────────────────────────────────────────────────────────────
 
 xpUpdatedEvent.OnClientEvent:Connect(function(totalXp, level, xpIntoLevel, xpForNextLevel)
@@ -151,6 +181,11 @@ leveledUpEvent.OnClientEvent:Connect(function(newLevel)
 	task.spawn(showLevelUpPopup, newLevel)
 end)
 
+moneyUpdatedEvent.OnClientEvent:Connect(function(totalMoney)
+	moneyLabel.Text = formatMoney(totalMoney)
+end)
+
 -- ── Initial sync ──────────────────────────────────────────────────────────────
 
 requestXpEvent:FireServer()
+requestMoneyEvent:FireServer()

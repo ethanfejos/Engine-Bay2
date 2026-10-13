@@ -28,12 +28,15 @@ local ProfileService = require(script.Parent:WaitForChild("ProfileService"))
 local DATASTORE_NAME = "EngineInventory_v1"
 
 -- Same shape as the old ProfileService.luau's DEFAULT_DATA, plus xp/level
--- tracking and a record of which parts have already paid out inspect XP
--- (so re-inspecting a reinstalled part doesn't farm XP repeatedly).
+-- tracking, a record of which parts have already paid out inspect XP
+-- (so re-inspecting a reinstalled part doesn't farm XP repeatedly), and a
+-- basic money balance. 100,000 is a testing-phase starting balance, not a
+-- tuned economy number — see MoneyService.
 local PROFILE_TEMPLATE = {
 	inventory = {}, -- list of { id, name, wear, engineName, relativeData }
 	xp = 0,
 	inspectedForXp = {}, -- set of "engineName:partName" -> true
+	money = 100000,
 }
 
 local ProfileStore = ProfileService.GetProfileStore(DATASTORE_NAME, PROFILE_TEMPLATE)

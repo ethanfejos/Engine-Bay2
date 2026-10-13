@@ -39,13 +39,15 @@ end
 -- [itemId] = { player, modelName, wear, engineName, relativeData, zoneName, instance }
 local droppedParts = {}
 
-local DROP_SIDE_CLEARANCE = 3 -- studs clear of the car's own side, past its bounding box
-local DROP_GROUND_HEIGHT  = 1.5 -- studs above the car's lowest point, so it sits near the ground, not at body height
+local DROP_CLEARANCE   = 2 -- studs clear of the engine/car's own footprint, past its bounding box edge
+local GROUND_CLEARANCE = 0.05 -- tiny gap so the part doesn't z-fight with the ground
 
--- Multiple parts dropped near the same car are spread out in a loose spiral
--- (golden-angle, like seed packing) around the drop anchor instead of all
--- landing on the exact same point.
-local SPREAD_RING_RADIUS = 1.1 -- studs of spread per "ring" of the spiral
+-- Multiple parts dropped near the same engine/car are spread out in a loose
+-- spiral (golden-angle, like seed packing) running all the way AROUND it,
+-- not just to one fixed side — each later slot in the same bay rings
+-- further out. Starting the index at 1 (not 0) means the very first part
+-- lands right at the clearance radius instead of dead-center on top of it.
+local SPREAD_RING_RADIUS = 1.6 -- studs of extra spread per ring of the spiral
 local GOLDEN_ANGLE       = math.rad(137.5)
 
 local PartPickupService = {}
@@ -61,7 +63,7 @@ local function claimSlot(zoneName)
 		slots = {}
 		activeSlotsByZone[zoneName] = slots
 	end
-	local index = 0
+	local index = 1
 	while slots[index] do
 		index += 1
 	end
@@ -76,27 +78,31 @@ local function releaseSlot(zoneName, slotIndex)
 	end
 end
 
--- Placed just outside the car's own side, near ground height — not near the
--- removed part's own position, which is inside the body and invisible until
--- you leave engine-view camera. Uses the car's own orientation (its CFrame's
--- RightVector), so "outside" is correct regardless of which way the car is
--- facing, and scales with the car's own size via its bounding box.
+-- Placed in a ring around the engine/car's own footprint, at ground height
+-- — not near the removed part's own position, which is inside the body (or
+-- up on the hoist) and invisible until you leave engine-view camera.
 --
 -- Also gives each drop a random yaw and a chance to land tipped onto its
 -- side, so a pile of parts doesn't look like a row of parts all standing
--- perfectly upright.
-local function getDropCFrame(sourceModel, zoneName, slotIndex)
+-- perfectly upright. "Ground height" is measured using dropClone's OWN
+-- bounding box at that final orientation (not a flat guess based on the
+-- car), so a small bolt and a big body panel both actually rest on the
+-- ground instead of floating above it or sinking into it.
+local function getDropCFrame(dropClone, sourceModel, zoneName, slotIndex)
 	local carRoot = ZoneUtils.GetTopLevelAncestor(sourceModel)
 	local carCFrame, carSize = carRoot:GetBoundingBox()
+	local groundY = carCFrame.Position.Y - carSize.Y / 2
 
-	local sideOffset   = carCFrame.RightVector * (carSize.X / 2 + DROP_SIDE_CLEARANCE)
-	local groundOffset = Vector3.new(0, -(carSize.Y / 2) + DROP_GROUND_HEIGHT, 0)
-	local anchorPos    = carCFrame.Position + sideOffset + groundOffset
+	-- Radius clear of the whole footprint's horizontal extent (its bounding
+	-- box's half-diagonal), so parts never spawn inside the engine/car/hoist
+	-- regardless of which way they're facing.
+	local footprintRadius = math.sqrt(carSize.X ^ 2 + carSize.Z ^ 2) / 2 + DROP_CLEARANCE
 
 	local angle  = slotIndex * GOLDEN_ANGLE
-	local radius = SPREAD_RING_RADIUS * math.sqrt(slotIndex)
-	local spreadOffset = carCFrame.RightVector * (math.cos(angle) * radius)
-		+ carCFrame.LookVector * (math.sin(angle) * radius)
+	local radius = footprintRadius + SPREAD_RING_RADIUS * math.sqrt(slotIndex - 1)
+	local spreadOffset = Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
+
+	local horizontal = Vector3.new(carCFrame.Position.X, 0, carCFrame.Position.Z) + spreadOffset
 
 	local yaw  = math.random() * math.pi * 2
 	local tilt = CFrame.new()
@@ -104,8 +110,18 @@ local function getDropCFrame(sourceModel, zoneName, slotIndex)
 		local axis = (math.random(0, 1) == 0) and Vector3.xAxis or Vector3.zAxis
 		tilt = CFrame.fromAxisAngle(axis, math.rad(90))
 	end
+	local orientation = CFrame.Angles(0, yaw, 0) * tilt
 
-	return CFrame.new(anchorPos + spreadOffset) * CFrame.Angles(0, yaw, 0) * tilt
+	-- Measure the clone's own bounding box at this orientation (position
+	-- doesn't matter yet) so we know how far its lowest point sits below
+	-- its pivot once tipped/rotated.
+	dropClone:PivotTo(orientation)
+	local boundsCFrame, boundsSize = dropClone:GetBoundingBox()
+	local pivotToBoundsCenterY = boundsCFrame.Position.Y -- relative to pivot at Y=0
+	local desiredBoundsCenterY = groundY + boundsSize.Y / 2 + GROUND_CLEARANCE
+	local pivotY = desiredBoundsCenterY - pivotToBoundsCenterY
+
+	return CFrame.new(horizontal.X, pivotY, horizontal.Z) * orientation
 end
 
 -- Actually adds the part to its owner's inventory and removes the dropped
@@ -151,7 +167,7 @@ function PartPickupService.DropPart(player, sourceModel, modelName, wear, engine
 	end
 
 	local slotIndex = claimSlot(zoneName)
-	local dropCFrame = getDropCFrame(sourceModel, zoneName, slotIndex)
+	local dropCFrame = getDropCFrame(dropClone, sourceModel, zoneName, slotIndex)
 	dropClone:PivotTo(dropCFrame)
 
 	local trigger         = Instance.new("Part")

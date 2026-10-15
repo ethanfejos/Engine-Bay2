@@ -8,9 +8,12 @@
     - Gotham font throughout
 ]]
 
+local TweenService = game:GetService("TweenService")
+
 local GUIBuilder = {}
 
-local FadeManager = require(script.Parent:WaitForChild("FadeManager"))
+-- How long the billboard takes to fade out when it's destroyed.
+local FADE_OUT = TweenInfo.new(0.2, Enum.EasingStyle.Quad)
 
 -- ── Palette ───────────────────────────────────────────────────────────────────
 
@@ -186,14 +189,27 @@ end
 
 -- ── Destroy ───────────────────────────────────────────────────────────────────
 
+-- Fades the billboard out in place, then destroys it. Text and any visible
+-- frames (divider, wear bar) fade together, so the label stays over its part
+-- while it fades. Replaces the old FadeManager, which moved labels into a
+-- disabled ScreenGui where they were never rendered.
+--
+-- Callers must stop anything that writes to these labels every frame (e.g.
+-- WearDisplay's RenderStepped) BEFORE calling this, or it will fight the
+-- fade. InspectionUI's cleanup() already does.
 function GUIBuilder.Destroy(gui)
 	if not gui then return end
 	for _, desc in ipairs(gui:GetDescendants()) do
-		if desc:IsA("TextLabel") then
-			FadeManager.Register(desc)
+		if desc:IsA("TextLabel") or desc:IsA("TextButton") then
+			TweenService:Create(desc, FADE_OUT, { TextTransparency = 1 }):Play()
+		end
+		if desc:IsA("GuiObject") and desc.BackgroundTransparency < 1 then
+			TweenService:Create(desc, FADE_OUT, { BackgroundTransparency = 1 }):Play()
 		end
 	end
-	gui:Destroy()
+	task.delay(FADE_OUT.Time, function()
+		gui:Destroy()
+	end)
 end
 
 return GUIBuilder

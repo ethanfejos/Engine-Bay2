@@ -23,6 +23,7 @@ local Modules       = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Mod
 local EngineContext  = require(Modules:WaitForChild("EngineContext"))
 local HC             = require(Modules:WaitForChild("HighlightController"))
 local ZoneUtils      = require(Modules:WaitForChild("ZoneUtils"))
+local PartRules      = require(Modules:WaitForChild("PartRules"))
 
 local remoteFolder   = ReplicatedStorage:WaitForChild("RemoteEvents")
 local reinstallEvent = remoteFolder:WaitForChild("ReinstallPart")
@@ -78,21 +79,12 @@ local function findTemplate(partName, engineName)
 	return engineFolder:FindFirstChild(partName)
 end
 
+-- Same rule the server enforces on reinstall (PartRules): everything this
+-- part Requires must already be back in the engine.
 local function canShowGhost(partName, engineName, engine)
 	local template = findTemplate(partName, engineName)
 	if not template then return false end
-
-	-- Part can only be reinstalled if everything it requires is back in the engine
-	local requires = template:GetAttribute("Requires")
-	if not requires or requires == "" then return true end
-
-	for _, req in ipairs(requires:split(",")) do
-		req = req:match("^%s*(.-)%s*$")
-		if not engine:FindFirstChild(req) then
-			return false
-		end
-	end
-	return true
+	return PartRules.GetReinstallBlocker(template, engine) == nil
 end
 
 local function clearGhost()

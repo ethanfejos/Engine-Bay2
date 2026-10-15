@@ -13,13 +13,22 @@
     - RequestXp      (client -> server) client asks for current xp/level
                        (e.g. on join), mirrors InventoryService's
                        RequestInventory pattern
-    - PartInspected  (client -> server) fired once by InspectionUI the
-                       moment a part is newly marked inspected. Validated
-                       server-side before any XP is granted — see the
-                       handler below for what "validated" means.
+    - InspectStart   (client -> server) the InspectionTool started holding
+                       on a part; the server notes the time
+    - PartInspected  (client -> server) the hold finished. Accepted only if
+                       it's the same part and at least the dwell time
+                       (PartRules.INSPECT_DWELL_TIME) has passed on the
+                       SERVER's clock. Accepted inspections are saved in
+                       profile.Data.inspectedForXp, which EngineServer also
+                       uses to require inspection before removal.
+      (server -> client) (engineName, partName, false) when refused, so
+                       the client un-marks the part.
+    - InspectedSync  (server -> client) the player's saved inspected parts,
+                       sent when their profile loads, so progress survives
+                       rejoining.
 
     Other scripts call LevelService.AddXP(player, amount, reason) directly
-    (EngineServer.legacy on removal, RepairService on repair completion)
+    (EngineServer on removal, RepairService on repair completion)
     rather than going through a remote, since those actions are already
     server-authoritative at the point AddXP is called.
 
@@ -33,6 +42,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local ProfileManager = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Modules"):WaitForChild("ProfileManager"))
 local LevelCurve      = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("LevelCurve"))
 local ZoneUtils       = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
+local PartRules       = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("PartRules"))
 
 -- ── XP Award Amounts ─────────────────────────────────────────────────────────
 
@@ -58,6 +68,8 @@ local xpUpdated        = getOrCreate(remoteFolder, "RemoteEvent", "XpUpdated")
 local leveledUp        = getOrCreate(remoteFolder, "RemoteEvent", "LeveledUp")
 local requestXp        = getOrCreate(remoteFolder, "RemoteEvent", "RequestXp")
 local partInspected    = getOrCreate(remoteFolder, "RemoteEvent", "PartInspected")
+local inspectStart     = getOrCreate(remoteFolder, "RemoteEvent", "InspectStart")
+local inspectedSync    = getOrCreate(remoteFolder, "RemoteEvent", "InspectedSync")
 
 -- ── Public API ────────────────────────────────────────────────────────────────
 
@@ -104,50 +116,101 @@ end)
 -- LevelUI's RequestXp usually arrives before the profile has loaded and gets
 -- nothing back, which left the bar at "LEVEL 1" until the first XP gain.
 -- Push as soon as the profile is ready instead.
-ProfileManager.OnProfileLoaded(function(player)
+-- Push as soon as the profile is ready instead. The saved inspected parts
+-- go out at the same time, so the client's inspection state matches the
+-- server's after rejoining.
+ProfileManager.OnProfileLoaded(function(player, profile)
 	pushXpToClient(player)
+
+	local keys = {}
+	for key in pairs(profile.Data.inspectedForXp) do
+		table.insert(keys, key)
+	end
+	inspectedSync:FireClient(player, keys)
 end)
 
--- ── Inspect Award ─────────────────────────────────────────────────────────────
--- InspectionUI fires this once, client-side, the moment a part is newly
--- marked inspected. Everything here exists to stop that being trusted
--- blindly — a client could otherwise fire this remote directly (e.g. via
--- a script executor) for parts it never actually looked at.
+-- ── Inspection ────────────────────────────────────────────────────────────────
+-- Inspection is timed on the SERVER: InspectStart notes when the hold began,
+-- and PartInspected is only accepted once the dwell time has passed. Both
+-- remotes are fired by the client, so everything is re-validated here — a
+-- client could otherwise claim to have inspected anything, instantly.
 
-partInspected.OnServerEvent:Connect(function(player, engineName, partName)
-	if type(engineName) ~= "string" or type(partName) ~= "string" then return end
+-- Small allowance for the two remotes arriving with slightly different
+-- network delays. Kept well under the dwell time so it can't be abused.
+local TIMING_TOLERANCE = 0.25
 
-	local profile = ProfileManager.GetProfile(player)
-	if not profile then return end
+-- [player] = { key = "engine:part", at = os.clock() } for the current hold
+local inspectStarts = {}
 
-	-- Must be standing in a zone, with an engine parked in it that matches
-	-- the one claimed. The engine is found by position, not by name/config.
+-- The real, inspectable part the client is talking about, in the engine
+-- parked in the bay the player is standing in — or nil (with a reason) if
+-- the claim doesn't check out.
+local function resolvePart(player, engineName, partName)
+	if type(engineName) ~= "string" or type(partName) ~= "string" then
+		return nil, "bad arguments"
+	end
 	local engine, zone = ZoneUtils.GetEngineForPlayer(player)
 	if not zone then
-		warn("[LevelService] Inspect XP claim with no zone from:", player.Name)
-		return
+		return nil, "not in a bay"
 	end
-
 	if not engine or engine.Name ~= engineName then
-		warn("[LevelService] Inspect XP claim engine mismatch from:", player.Name)
-		return
+		return nil, "engine mismatch"
 	end
-
-	-- The part has to actually exist, in that engine, and be a real
-	-- inspectable model — not just any string the client feels like sending.
 	local model = engine:FindFirstChild(partName)
-	if not model or not model:IsA("Model") or not model:GetAttribute("Inspectable") then
-		warn("[LevelService] Inspect XP claim on invalid part from:", player.Name)
+	if not model or not model:IsA("Model") or not PartRules.IsInspectable(model) then
+		return nil, "not an inspectable part"
+	end
+	return model
+end
+
+inspectStart.OnServerEvent:Connect(function(player, engineName, partName)
+	local model = resolvePart(player, engineName, partName)
+	if not model then
+		inspectStarts[player] = nil
 		return
 	end
+	inspectStarts[player] = {
+		key = PartRules.InspectKey(engineName, partName),
+		at  = os.clock(),
+	}
+end)
 
-	-- Only pay out once per part, ever, per player — persisted so it
-	-- survives rejoin and can't be farmed by re-inspecting after reinstall.
-	local key = engineName .. ":" .. partName
+partInspected.OnServerEvent:Connect(function(player, engineName, partName)
+	local function refuse(reason)
+		warn("[LevelService] Inspection refused for", player.Name, "-", reason)
+		if type(engineName) == "string" and type(partName) == "string" then
+			partInspected:FireClient(player, engineName, partName, false)
+		end
+	end
+
+	local profile = ProfileManager.GetProfile(player)
+	if not profile then return refuse("save not loaded") end
+
+	local model, why = resolvePart(player, engineName, partName)
+	if not model then return refuse(why) end
+
+	local key   = PartRules.InspectKey(engineName, partName)
+	local start = inspectStarts[player]
+	inspectStarts[player] = nil
+
+	-- Already inspected (e.g. a reinstalled part): nothing to record or pay.
 	if profile.Data.inspectedForXp[key] then return end
-	profile.Data.inspectedForXp[key] = true
 
+	if not start or start.key ~= key then
+		return refuse("no matching InspectStart")
+	end
+	if os.clock() - start.at < PartRules.INSPECT_DWELL_TIME - TIMING_TOLERANCE then
+		return refuse("held for less than the dwell time")
+	end
+
+	-- Saved, so it survives rejoining, can't be re-farmed after a reinstall,
+	-- and lets EngineServer require inspection before removal.
+	profile.Data.inspectedForXp[key] = true
 	LevelService.AddXP(player, XP_AWARDS.inspect, "inspect")
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	inspectStarts[player] = nil
 end)
 
 return LevelService

@@ -27,6 +27,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 -- unchanged.
 local ProfileService = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Modules"):WaitForChild("ProfileManager"))
 local ZoneUtils      = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
+local PartRules      = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("PartRules"))
 
 -- ── Remotes ───────────────────────────────────────────────────────────────────
 
@@ -171,10 +172,6 @@ reinstallEvent.OnServerEvent:Connect(function(player, itemId)
 		return
 	end
 
-	-- Check reinstall dependencies — part can only go back if parts
-	-- that depend on it are already reinstalled (reverse dependency order)
-	-- We check: does any currently-missing part list this part in its Requires?
-	-- If so, that part must be reinstalled first
 	local templateFolder = ReplicatedStorage:WaitForChild("EnginePartTemplates")
 	local engineFolder   = templateFolder:FindFirstChild(engineName)
 	if not engineFolder then
@@ -189,19 +186,12 @@ reinstallEvent.OnServerEvent:Connect(function(player, itemId)
 		return
 	end
 
-	-- Check reinstall order using the part's own Requires attribute
-	-- A part can only be reinstalled if all parts listed in its Requires
-	-- are already back in the engine (not in inventory)
-	local requires = template:GetAttribute("Requires")
-	if requires and requires ~= "" then
-		for _, req in ipairs(requires:split(",")) do
-			req = req:match("^%s*(.-)%s*$")
-			if not engine:FindFirstChild(req) then
-				-- Required part is not in engine yet — must reinstall it first
-				rejectReinstall(player, "BLOCKED", req)
-				return
-			end
-		end
+	-- Reverse dependency order: every part this one Requires must already be
+	-- back in the engine (see PartRules — the ghost uses the same rule).
+	local blockedBy = PartRules.GetReinstallBlocker(template, engine)
+	if blockedBy then
+		rejectReinstall(player, "BLOCKED", blockedBy)
+		return
 	end
 
 	-- All checks passed — clone template into engine with original wear and position

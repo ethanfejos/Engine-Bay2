@@ -23,10 +23,6 @@ local EngineContext   = require(Modules:WaitForChild("EngineContext"))
 local GUIBuilder      = require(UI:WaitForChild("GUIBuilder"))
 local WearDisplay     = require(UI:WaitForChild("WearDisplay"))
 
-local partInspectedEvent = ReplicatedStorage
-	:WaitForChild("RemoteEvents")
-	:WaitForChild("PartInspected")
-
 -- ── State ─────────────────────────────────────────────────────────────────────
 
 local currentGUI      = nil
@@ -40,15 +36,6 @@ local equippedTool    = nil
 local FADE_TIME = 0.25
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
-
-local function wearColor(w)
-	w = math.clamp(w or 100, 0, 100) / 100
-	if w <= 0.5 then
-		return Color3.new(1, w / 0.5, 0)
-	else
-		return Color3.new(1 - (w - 0.5) / 0.5, 1, 0)
-	end
-end
 
 local function fadeIn(label, targetTransparency)
 	TweenService:Create(label,
@@ -136,14 +123,6 @@ local function showGUI(model)
 
 			-- Hand off to WearDisplay which animates bar to wear value
 			wearConnection = WearDisplay.Start(model, labels, part)
-
-			-- Tell the server this part was just inspected, for XP.
-			-- Server re-validates zone/engine/part before granting anything —
-			-- this is just the trigger, not the authority.
-			local engineName = model.Parent and model.Parent.Name
-			if engineName then
-				partInspectedEvent:FireServer(engineName, model.Name)
-			end
 		end
 	)
 end

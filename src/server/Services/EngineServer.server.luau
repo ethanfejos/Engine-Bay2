@@ -1,27 +1,36 @@
 --[[
     EngineServer (Script)
     ---------------------
-    Changes from previous version:
-    - Added InventoryService integration — parts go to inventory on removal
-    - Removed respawn system — replaced by reinstall system
-    - Added PartRemoving remote for client animation
-    - Fixed missing ToolRegistry require
+    Server side of removing parts from an engine (the Wrench), plus giving
+    every inspectable part a random starting Wear.
 
-    Other scripts it links to:
-    - Workspace.EngineZones: folder of zone BaseParts (name = zone identity)
-    - ReplicatedStorage.Modules.ZoneUtils: finds the engine parked in a bay
-    - ReplicatedStorage.RemoteEvents.RemovePart: fired by Wrench tool
-    - ServerScriptService.Services.InventoryService: handles part inventory
+    RemovePart (client -> server): the Wrench asks to remove a part or bolt.
+    The server re-checks every rule, using the same PartRules the Wrench
+    uses for its hints:
+    - the part is a real Inspectable part or bolt in the engine parked in
+      the bay the player is standing in
+    - parts (not bolts) have been inspected by this player
+    - nothing is still in the way (Requires / bolts)
+    - it isn't already being removed
+
+    RemovePart (server -> client) answers every refusal so the Wrench can
+    show why and unlock:  (status, model, detail)
+      "BLOCKED"        detail = the part or bolt that must come off first
+      "NOT_INSPECTED"  part hasn't been inspected yet
+      "FAILED"         detail = short reason (not in a bay, wrong engine...)
+    Success is signalled by PartRemoving (server -> client), which also
+    plays the removal animation.
 ]]
 
-local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 local HttpService         = game:GetService("HttpService")
 
 local LevelService      = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Services"):WaitForChild("LevelService"))
 local PartPickupService = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Services"):WaitForChild("PartPickupService"))
+local ProfileManager    = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Modules"):WaitForChild("ProfileManager"))
 local ZoneUtils         = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
+local PartRules         = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("PartRules"))
 
 -- ── Physics stabilization on removal ────────────────────────────────────────────
 -- Destroying a part removes real mass from a live, unanchored vehicle, and
@@ -103,29 +112,6 @@ local WEAR_MIN          = 10
 local WEAR_MAX          = 100
 local REMOVE_ANIM_DELAY = 0.7
 
--- ── Dependency Check ──────────────────────────────────────────────────────────
-
-local function checkDependencies(model)
-	local requires = model:GetAttribute("Requires")
-	if requires and requires ~= "" then
-		local engine = model.Parent
-		for _, partName in ipairs(requires:split(",")) do
-			partName = partName:match("^%s*(.-)%s*$")
-			if engine:FindFirstChild(partName) then
-				return false, partName
-			end
-		end
-	end
-
-	for _, child in ipairs(model:GetChildren()) do
-		if child:IsA("Model") and child:GetAttribute("IsBolt") then
-			return false, child.Name
-		end
-	end
-
-	return true, nil
-end
-
 -- ── Wear Initialisation ───────────────────────────────────────────────────────
 
 local function initWear(model)
@@ -149,47 +135,76 @@ end
 
 -- ── Remove Event ──────────────────────────────────────────────────────────────
 
+-- Models currently mid-removal (during the animation delay), so a repeated
+-- request for the same part is refused instead of replaying the animation.
+local removing = setmetatable({}, { __mode = "k" })
+
+local function refuse(player, status, model, detail)
+	removeEvent:FireClient(player, status, model, detail)
+end
+
 removeEvent.OnServerEvent:Connect(function(player, model)
-	if not model or not model:IsA("Model") then
+	if typeof(model) ~= "Instance" or not model:IsA("Model") then
 		warn("[EngineServer] Invalid remove target from:", player.Name)
+		return -- nothing sensible to answer about
+	end
+
+	local isBolt = PartRules.IsBolt(model)
+	if not isBolt and not PartRules.IsInspectable(model) then
+		warn("[EngineServer] Non-inspectable remove attempt from:", player.Name)
+		refuse(player, "FAILED", model, "not a removable part")
 		return
 	end
 
-	if not model:GetAttribute("Inspectable") and not model:GetAttribute("IsBolt") then
-		warn("[EngineServer] Non-inspectable remove attempt from:", player.Name)
-		return
+	if removing[model] then
+		return -- already on its way out; the first request's PartRemoving answers it
 	end
 
 	-- The engine is whatever is parked in the bay the player is standing in —
 	-- not a fixed engine tied to the zone.
 	local engine, zone = ZoneUtils.GetEngineForPlayer(player)
 	if not zone then
-		warn("[EngineServer] Out-of-zone remove attempt from:", player.Name)
+		refuse(player, "FAILED", model, "not in a bay")
 		return
 	end
-
 	if not engine or not model:IsDescendantOf(engine) then
-		warn("[EngineServer] Model not in player's zone engine from:", player.Name)
+		refuse(player, "FAILED", model, "not in this bay's engine")
 		return
 	end
 
-	-- Bolts — remove with animation, no inventory
-	if model:GetAttribute("IsBolt") then
+	-- Bolts — no inspection needed, no inventory, just removed
+	if isBolt then
+		removing[model] = true
 		partRemovingEvent:FireClient(player, model)
 		task.delay(REMOVE_ANIM_DELAY, function()
-			if model and model.Parent then
+			if model.Parent then
 				model:Destroy()
 			end
 		end)
 		return
 	end
 
-	-- Dependency check
-	local canRemove, blockedBy = checkDependencies(model)
-	if not canRemove then
-		removeEvent:FireClient(player, "BLOCKED", model, blockedBy)
+	-- Parts must have been inspected by this player first. The inspected set
+	-- is saved on the server (LevelService records it), so this can't be
+	-- skipped by a client that never ran the inspection tool.
+	local profile = ProfileManager.GetProfile(player)
+	if not profile then
+		refuse(player, "FAILED", model, "save not loaded")
 		return
 	end
+	local key = PartRules.InspectKeyForModel(model)
+	if not key or not profile.Data.inspectedForXp[key] then
+		refuse(player, "NOT_INSPECTED", model)
+		return
+	end
+
+	local blockedBy = PartRules.GetRemovalBlocker(model)
+	if blockedBy then
+		refuse(player, "BLOCKED", model, blockedBy)
+		return
+	end
+
+	removing[model] = true
 
 	-- Capture data before destroy
 	local modelName    = model.Name
@@ -218,25 +233,33 @@ removeEvent.OnServerEvent:Connect(function(player, model)
 	partRemovingEvent:FireClient(player, model)
 
 	task.delay(REMOVE_ANIM_DELAY, function()
-		if model and model.Parent then
-			-- Removal XP is paid once per physical part: the first time it
-			-- comes off a car. InventoryService marks every reinstalled part
-			-- with RemovalXpPaid, so remove → reinstall → remove can't farm
-			-- XP. Read before DropPart/Destroy, while the model still exists.
-			local removalXpAlreadyPaid = model:GetAttribute("RemovalXpPaid") == true
+		if not model.Parent then return end
 
-			stabilizeCarAcross(model, function()
-				-- DropPart clones the model for the pickup object before this
-				-- destroys the original — the part no longer goes straight into
-				-- inventory, it has to be picked up from where it was removed.
-				PartPickupService.DropPart(player, model, modelName, wear, engineName, relativeData, itemId, zone.Name)
-				model:Destroy()
-			end)
-			if not removalXpAlreadyPaid then
-				LevelService.AddXP(player, LevelService.XP_AWARDS.remove, "remove")
-			end
-	end
-end)
+		-- Removal XP is paid once per physical part: the first time it
+		-- comes off a car. InventoryService marks every reinstalled part
+		-- with RemovalXpPaid, so remove → reinstall → remove can't farm
+		-- XP. Read before DropPart/Destroy, while the model still exists.
+		local removalXpAlreadyPaid = model:GetAttribute("RemovalXpPaid") == true
+
+		stabilizeCarAcross(model, function()
+			-- DropPart clones the model for the pickup object before this
+			-- destroys the original — the part no longer goes straight into
+			-- inventory, it has to be picked up from where it was removed.
+			PartPickupService.DropPart(player, model, modelName, wear, engineName, relativeData, itemId, zone.Name)
+			model:Destroy()
+		end)
+
+		-- If something errored and the part is still there, allow a retry
+		-- rather than leaving it stuck as "being removed".
+		if model.Parent then
+			removing[model] = nil
+			return
+		end
+
+		if not removalXpAlreadyPaid then
+			LevelService.AddXP(player, LevelService.XP_AWARDS.remove, "remove")
+		end
+	end)
 end)
 
 -- ── Init ──────────────────────────────────────────────────────────────────────

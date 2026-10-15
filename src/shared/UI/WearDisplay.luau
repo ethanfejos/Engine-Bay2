@@ -17,14 +17,8 @@ local MAX_DIST        = 16
 local PULSE_THRESHOLD = 30
 local PULSE_SPEED     = 2 * math.pi
 
-local function wearColor(w)
-	w = math.clamp(w or 100, 0, 100) / 100
-	if w <= 0.5 then
-		return Color3.new(1, w / 0.5, 0)
-	else
-		return Color3.new(1 - (w - 0.5) / 0.5, 1, 0)
-	end
-end
+local WearColors = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("WearColors"))
+local wearColor  = WearColors.Gradient
 
 -- Animate bar from 0 to the wear value over 0.6s on first reveal
 local function animateBarIn(labels, wear)

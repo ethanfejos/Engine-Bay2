@@ -1,12 +1,20 @@
 --[[
-    RepairService (ModuleScript)
-    ----------------------------
-    Server side repair logic.
-    - Validates player is near workbench
-    - Validates part is in inventory and above 10% wear
-    - Repairs over time based on wear
-    - Updates wear in ProfileService on completion
-    - Fires RepairProgress and RepairComplete to client
+    RepairService (ModuleScript, run by RepairServiceRunner)
+    --------------------------------------------------------
+    Server side of the workbench. A part in the player's inventory can be:
+    - REPAIRED: free, timed, +XP. The player must stay at the bench.
+    - REPLACED: paid through MoneyService, instant, no XP.
+    The rules (what's allowed at which wear, repair time, replacement price)
+    come from the shared RepairRules, which RepairUI also uses.
+
+    RemoteEvents:
+    - StartRepair    (client -> server) itemId
+    - CancelRepair   (client -> server)
+    - ReplacePart    (client -> server) itemId
+    - RepairProgress (server -> client) itemId, 0–1; -1 = stopped
+    - RepairComplete (server -> client) itemId, partName, how ("repaired" | "replaced")
+    - RepairRefused  (server -> client) itemId, message — a short, player-
+                     facing reason for any refusal (also logged in Output)
 
     Place in: ServerScriptService/Services
 ]]
@@ -15,18 +23,18 @@ local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
--- Points at ProfileManager (wraps the real ProfileService library) rather
--- than the old hand-rolled ProfileService.luau. Kept as the local name
--- "ProfileService" so the ProfileService.GetProfile(...) call below is unchanged.
-local ProfileService   = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Modules"):WaitForChild("ProfileManager"))
-local InventoryService = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Services"):WaitForChild("InventoryService"))
-local LevelService      = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Services"):WaitForChild("LevelService"))
+local Services = ServerScriptService:WaitForChild("Server"):WaitForChild("Services")
 
--- ── Constants ─────────────────────────────────────────────────────────────────
+local ProfileManager   = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Modules"):WaitForChild("ProfileManager"))
+local InventoryService = require(Services:WaitForChild("InventoryService"))
+local LevelService     = require(Services:WaitForChild("LevelService"))
+local MoneyService     = require(Services:WaitForChild("MoneyService"))
+local RepairRules      = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("RepairRules"))
 
-local MIN_REPAIRABLE_WEAR = 10   -- below this, part cannot be repaired
-local MAX_REPAIR_TIME     = 10   -- seconds for worst repairable part
-local WORKBENCH_RADIUS    = 12   -- studs player must stay within
+-- ── Config ────────────────────────────────────────────────────────────────────
+
+local WORKBENCH_RADIUS = 12   -- studs the player must stay within
+local TICK             = 0.1  -- seconds between repair progress updates
 
 -- ── Remotes ───────────────────────────────────────────────────────────────────
 
@@ -39,47 +47,84 @@ local function getOrCreate(parent, className, name)
 	return inst
 end
 
-local remoteFolder     = getOrCreate(ReplicatedStorage, "Folder", "RemoteEvents")
-local startRepairEvent = getOrCreate(remoteFolder, "RemoteEvent", "StartRepair")
+local remoteFolder      = getOrCreate(ReplicatedStorage, "Folder", "RemoteEvents")
+local startRepairEvent  = getOrCreate(remoteFolder, "RemoteEvent", "StartRepair")
 local cancelRepairEvent = getOrCreate(remoteFolder, "RemoteEvent", "CancelRepair")
-local repairProgress   = getOrCreate(remoteFolder, "RemoteEvent", "RepairProgress")
-local repairComplete   = getOrCreate(remoteFolder, "RemoteEvent", "RepairComplete")
+local replacePartEvent  = getOrCreate(remoteFolder, "RemoteEvent", "ReplacePart")
+local repairProgress    = getOrCreate(remoteFolder, "RemoteEvent", "RepairProgress")
+local repairComplete    = getOrCreate(remoteFolder, "RemoteEvent", "RepairComplete")
+local repairRefused     = getOrCreate(remoteFolder, "RemoteEvent", "RepairRefused")
+local inventoryUpdated  = getOrCreate(remoteFolder, "RemoteEvent", "InventoryUpdated")
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 
-local activeRepairs = {} -- [player] = { itemId, thread }
+local activeRepairs = {} -- [player] = { itemId = string, thread = thread }
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
-local function getWorkbenchPosition()
+-- The bench's "Main" part (or PrimaryPart), looked up once and re-found only
+-- if it's been removed — not scanned every repair tick.
+local benchPart = nil
+local function getBenchPart()
+	if benchPart and benchPart.Parent then return benchPart end
+	benchPart = nil
 	local wb = workspace:FindFirstChild("Workbench")
 	if not wb then return nil end
-	for _, desc in ipairs(wb:GetDescendants()) do
-		if desc.Name == "Main" and desc:IsA("BasePart") then
-			return desc.Position
-		end
+	local main = wb:FindFirstChild("Main", true)
+	if main and main:IsA("BasePart") then
+		benchPart = main
+	elseif wb:IsA("Model") and wb.PrimaryPart then
+		benchPart = wb.PrimaryPart
 	end
-	local pp = wb.PrimaryPart
-	if pp then return pp.Position end
-	return nil
+	return benchPart
 end
 
 local function isNearWorkbench(player)
-	local hrp = player.Character
-		and player.Character:FindFirstChild("HumanoidRootPart")
-	if not hrp then return false end
-	local wbPos = getWorkbenchPosition()
-	if not wbPos then return false end
-	return (hrp.Position - wbPos).Magnitude <= WORKBENCH_RADIUS
+	local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	local bench = getBenchPart()
+	if not hrp or not bench then return false end
+	return (hrp.Position - bench.Position).Magnitude <= WORKBENCH_RADIUS
 end
 
-local function getRepairTime(wear)
-	-- Parts closer to 10% take longer
-	local fraction = 1 - (wear / 100)
-	return math.max(1, fraction * MAX_REPAIR_TIME)
+-- Tells the client why, in words for the player, and stops any progress bar.
+local function refuse(player, itemId, message, logDetail)
+	warn("[RepairService] Refused for", player.Name, "-", logDetail or message)
+	repairRefused:FireClient(player, itemId, message)
+	repairProgress:FireClient(player, itemId, -1)
 end
 
--- ── Cancel ────────────────────────────────────────────────────────────────────
+-- Sets an inventory item to perfect condition and resends the inventory.
+-- Returns false if the item is no longer in the inventory.
+local function setPerfect(player, itemId)
+	local profile = ProfileManager.GetProfile(player)
+	if not profile then return false end
+	for _, invItem in ipairs(profile.Data.inventory) do
+		if invItem.id == itemId then
+			invItem.wear = 100
+			inventoryUpdated:FireClient(player, profile.Data.inventory)
+			return true
+		end
+	end
+	return false
+end
+
+-- Common checks for both actions. Returns the inventory item, or nil after
+-- refusing.
+local function checkRequest(player, itemId)
+	if type(itemId) ~= "string" then
+		return nil
+	end
+	if not isNearWorkbench(player) then
+		refuse(player, itemId, "GO TO THE WORKBENCH", "not near workbench")
+		return nil
+	end
+	local hasPart, item = InventoryService.HasPartById(player, itemId)
+	if not hasPart then
+		refuse(player, itemId, "PART NOT IN INVENTORY", "item not in inventory")
+		return nil
+	end
+	return item
+end
 
 local function cancelRepair(player)
 	local repair = activeRepairs[player]
@@ -89,106 +134,95 @@ local function cancelRepair(player)
 	end
 end
 
--- ── Start Repair ──────────────────────────────────────────────────────────────
-
--- Every rejected StartRepair answers with progress -1 (the same "cancelled"
--- signal used when you walk away mid-repair), so RepairUI resets its button
--- instead of sitting on "..." forever.
-local function rejectRepair(player, itemId, reason)
-	warn("[RepairService] Repair rejected for", player.Name, "-", reason)
-	repairProgress:FireClient(player, itemId, -1)
-end
+-- ── Repair (free, timed) ──────────────────────────────────────────────────────
 
 startRepairEvent.OnServerEvent:Connect(function(player, itemId)
-	-- Cancel any existing repair
 	cancelRepair(player)
 
-	-- Validate near workbench
-	if not isNearWorkbench(player) then
-		rejectRepair(player, itemId, "not near workbench")
+	local item = checkRequest(player, itemId)
+	if not item then return end
+
+	local options = RepairRules.GetOptions(item.wear)
+	if not options.canRepair then
+		refuse(player, itemId, options.reason or options.repairReason or "CAN'T REPAIR",
+			"can't repair at wear " .. tostring(item.wear))
 		return
 	end
 
-	-- Find item in inventory
-	local hasPart, item = InventoryService.HasPartById(player, itemId)
-	if not hasPart then
-		rejectRepair(player, itemId, "item not in inventory")
-		return
-	end
+	local repairTime = RepairRules.GetRepairTime(item.wear)
 
-	-- Validate wear
-	if item.wear <= MIN_REPAIRABLE_WEAR then
-		rejectRepair(player, itemId, "wear too low to repair (" .. tostring(item.wear) .. ")")
-		return
-	end
-
-	if item.wear >= 100 then
-		rejectRepair(player, itemId, "already at full condition")
-		return
-	end
-
-	local repairTime = getRepairTime(item.wear)
-
-	-- Start repair thread
 	local thread = task.spawn(function()
 		local elapsed = 0
-		local interval = 0.1
-
 		while elapsed < repairTime do
-			task.wait(interval)
-			elapsed = elapsed + interval
+			task.wait(TICK)
+			elapsed += TICK
 
-			-- Check player still near workbench
 			if not isNearWorkbench(player) then
-				repairProgress:FireClient(player, itemId, -1) -- -1 signals cancelled
 				activeRepairs[player] = nil
+				refuse(player, itemId, "REPAIR STOPPED: LEFT THE BENCH", "walked away mid-repair")
 				return
 			end
-
-			local progress = math.clamp(elapsed / repairTime, 0, 1)
-			repairProgress:FireClient(player, itemId, progress)
+			repairProgress:FireClient(player, itemId, math.clamp(elapsed / repairTime, 0, 1))
 		end
 
-		-- Repair complete — update wear in inventory
-		local profile = ProfileService.GetProfile(player)
-		if profile then
-			local found = false
-			for _, invItem in ipairs(profile.Data.inventory) do
-				if invItem.id == itemId then
-					invItem.wear = 100
-					found = true
-					break
-				end
-			end
-
-			-- The part left the inventory mid-repair (e.g. it was
-			-- reinstalled) — nothing was repaired, so no completion or XP.
-			if not found then
-				rejectRepair(player, itemId, "item left inventory during repair")
-				activeRepairs[player] = nil
-				return
-			end
-
-			-- Fire updated inventory and completion event
-			local inventoryUpdated = ReplicatedStorage
-				:WaitForChild("RemoteEvents")
-				:WaitForChild("InventoryUpdated")
-			inventoryUpdated:FireClient(player, profile.Data.inventory)
-		end
-
-		repairComplete:FireClient(player, itemId, item.name)
-		LevelService.AddXP(player, LevelService.XP_AWARDS.repair, "repair")
 		activeRepairs[player] = nil
+
+		-- The part left the inventory mid-repair (e.g. it was reinstalled):
+		-- nothing was repaired, so no completion and no XP.
+		if not setPerfect(player, itemId) then
+			refuse(player, itemId, "PART NOT IN INVENTORY", "item left inventory during repair")
+			return
+		end
+
+		repairComplete:FireClient(player, itemId, item.name, "repaired")
+		LevelService.AddXP(player, LevelService.XP_AWARDS.repair, "repair")
 	end)
 
 	activeRepairs[player] = { itemId = itemId, thread = thread }
 end)
 
--- ── Cancel Repair ─────────────────────────────────────────────────────────────
-
 cancelRepairEvent.OnServerEvent:Connect(function(player)
 	cancelRepair(player)
 	repairProgress:FireClient(player, nil, -1)
+end)
+
+-- ── Replace (paid, instant) ───────────────────────────────────────────────────
+
+replacePartEvent.OnServerEvent:Connect(function(player, itemId)
+	local item = checkRequest(player, itemId)
+	if not item then return end
+
+	local options = RepairRules.GetOptions(item.wear)
+	if not options.canReplace then
+		refuse(player, itemId, options.reason or "CAN'T REPLACE",
+			"can't replace at wear " .. tostring(item.wear))
+		return
+	end
+
+	-- Replacing the part that's mid-repair stops that repair (no XP for it).
+	local repair = activeRepairs[player]
+	if repair and repair.itemId == itemId then
+		cancelRepair(player)
+	end
+
+	local price = RepairRules.GetReplacePrice(RepairRules.FindTemplate(item.engineName, item.name))
+	-- (TrySpend refuses amounts of 0, so a free part skips paying.)
+	if price > 0 and not MoneyService.TrySpend(player, price, "replace " .. item.name) then
+		refuse(player, itemId, "NOT ENOUGH MONEY", "can't afford $" .. price)
+		return
+	end
+
+	if not setPerfect(player, itemId) then
+		-- Shouldn't happen (checked above with no yield in between), but never
+		-- keep the money for a part that wasn't replaced.
+		if price > 0 then
+			MoneyService.AddMoney(player, price, "refund: replace failed")
+		end
+		refuse(player, itemId, "PART NOT IN INVENTORY", "item vanished during replace")
+		return
+	end
+
+	repairComplete:FireClient(player, itemId, item.name, "replaced")
 end)
 
 -- ── Cleanup on leave ──────────────────────────────────────────────────────────

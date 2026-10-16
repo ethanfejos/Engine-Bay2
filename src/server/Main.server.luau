@@ -26,6 +26,7 @@ local ORDER = {
 	{ SharedModules, "Remotes" },      -- creates every RemoteEvent first
 	{ Modules,  "ProfileManager" },    -- saving; everything below uses it
 	{ Services, "ZoneService" },       -- zone enter/leave signals
+	{ Services, "CarService" },        -- car ids and owners
 	{ Services, "InventoryService" },
 	{ Services, "LevelService" },
 	{ Services, "MoneyService" },

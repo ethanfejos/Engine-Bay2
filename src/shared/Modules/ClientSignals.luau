@@ -10,8 +10,8 @@
     nothing to create, find or wait for:
 
         local ClientSignals = require(Shared.Modules.ClientSignals)
-        ClientSignals.PartSelected:Connect(function(itemId, name, engineName, relativeData) ... end)
-        ClientSignals.PartSelected:Fire(item.id, item.name, item.engineName, item.relativeData)
+        ClientSignals.PartSelected:Connect(function(itemId, name, engineName, relativeData, carId) ... end)
+        ClientSignals.PartSelected:Fire(item.id, item.name, item.engineName, item.relativeData, item.carId)
 
     Every client script gets the same copy of this module, because all
     LocalScripts on one client share their required modules.
@@ -21,7 +21,7 @@ local Signal = require(script.Parent:WaitForChild("Signal"))
 
 export type ClientSignals = {
 	-- InventoryUI -> GhostSystem, RepairUI
-	-- (itemId?, partName?, engineName?, relativeData?) — all nil = nothing selected
+	-- (itemId?, partName?, engineName?, relativeData?, carId?) — all nil = nothing selected
 	PartSelected : Signal.Signal,
 
 	-- GhostSystem -> InventoryUI: hide this item straight away, it's being

@@ -19,6 +19,8 @@
         be reinstalled (the reverse order).
 ]]
 
+local CarUtils = require(script.Parent:WaitForChild("CarUtils"))
+
 local PartRules = {}
 
 -- How long the player must hold the inspection tool on a part. The client
@@ -82,18 +84,18 @@ function PartRules.GetReinstallBlocker(template: Instance, engine: Instance): st
 end
 
 -- The key a part's inspection is remembered by, on both client and server
--- (the server saves it in profile.Data.inspectedForXp). Keyed by engine
--- name + part name, so a reinstalled part stays inspected.
--- Known limit: two cars with the same engine name share inspection
--- progress. Switch to a per-car id once cars have one.
-function PartRules.InspectKey(engineName: string, partName: string): string
-	return engineName .. ":" .. partName
+-- (the server saves it in profile.Data.inspectedForXp): the car's id + the
+-- part name, so each car is inspected separately and a part reinstalled in
+-- the same car stays inspected. Falls back to the engine name for an
+-- engine CarService hasn't given an id yet.
+function PartRules.InspectKey(carKey: string, partName: string): string
+	return carKey .. ":" .. partName
 end
 
 function PartRules.InspectKeyForModel(model: Instance): string?
 	local engine = model.Parent
 	if not engine then return nil end
-	return PartRules.InspectKey(engine.Name, model.Name)
+	return PartRules.InspectKey(CarUtils.GetCarId(engine) or engine.Name, model.Name)
 end
 
 return PartRules

@@ -52,6 +52,9 @@ export type Remotes = {
 	RemovePart       : RemoteEvent, -- client -> server
 	PartRemoving     : RemoteEvent, -- server -> client: play the removal effect
 
+	-- Cars (CarService)
+	ClaimCar         : RemoteEvent, -- client -> server: carId
+
 	-- Workbench (RepairService)
 	StartRepair      : RemoteEvent, -- client -> server: itemId
 	CancelRepair     : RemoteEvent, -- client -> server
@@ -66,6 +69,7 @@ local NAMES = {
 	"XpUpdated", "LeveledUp", "RequestXp", "InspectStart", "PartInspected", "InspectedSync",
 	"MoneyUpdated", "RequestMoney",
 	"RemovePart", "PartRemoving",
+	"ClaimCar",
 	"StartRepair", "CancelRepair", "ReplacePart", "RepairProgress", "RepairComplete", "RepairRefused",
 }
 

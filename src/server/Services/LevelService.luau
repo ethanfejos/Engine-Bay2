@@ -22,8 +22,8 @@
                        SERVER's clock. Accepted inspections are saved in
                        profile.Data.inspectedForXp, which EngineServer also
                        uses to require inspection before removal.
-      (server -> client) (engineName, partName, false) when refused, so
-                       the client un-marks the part.
+      (server -> client) (engineName, partName, false, key) when
+                       refused, so the client un-marks the part.
     - InspectedSync  (server -> client) the player's saved inspected parts,
                        sent when their profile loads, so progress survives
                        rejoining.
@@ -43,6 +43,7 @@ local ProfileManager = require(script.Parent.Parent.Modules.ProfileManager)
 local LevelCurve      = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("LevelCurve"))
 local ZoneUtils       = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 local PartRules       = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("PartRules"))
+local CarUtils        = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("CarUtils"))
 local Log             = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Log"))
 
 local log = Log.new("LevelService")
@@ -133,12 +134,12 @@ end)
 -- network delays. Kept well under the dwell time so it can't be abused.
 local TIMING_TOLERANCE = 0.25
 
--- [player] = { key = "engine:part", at = os.clock() } for the current hold
+-- [player] = { key = "carId:part", at = os.clock() } for the current hold
 local inspectStarts = {}
 
 -- The real, inspectable part the client is talking about, in the engine
--- parked in the bay the player is standing in — or nil (with a reason) if
--- the claim doesn't check out.
+-- parked in the bay the player is standing in, on a car they own — or nil
+-- (with a reason) if the claim doesn't check out.
 local function resolvePart(player: Player, engineName: any, partName: any): (Model?, string?)
 	if type(engineName) ~= "string" or type(partName) ~= "string" then
 		return nil, "bad arguments"
@@ -149,6 +150,9 @@ local function resolvePart(player: Player, engineName: any, partName: any): (Mod
 	end
 	if not engine or engine.Name ~= engineName then
 		return nil, "engine mismatch"
+	end
+	if not CarUtils.IsOwnedBy(engine, player) then
+		return nil, "not your car"
 	end
 	local model = engine:FindFirstChild(partName)
 	if not model or not model:IsA("Model") or not PartRules.IsInspectable(model) then
@@ -164,16 +168,17 @@ inspectStart.OnServerEvent:Connect(function(player, engineName, partName)
 		return
 	end
 	inspectStarts[player] = {
-		key = PartRules.InspectKey(engineName, partName),
+		key = PartRules.InspectKeyForModel(model),
 		at  = os.clock(),
 	}
 end)
 
 partInspected.OnServerEvent:Connect(function(player, engineName, partName)
-	local function refuse(reason)
+	-- `key` is sent along so the client un-marks the right car's part.
+	local function refuse(reason, key: string?)
 		warn("[LevelService] Inspection refused for", player.Name, "-", reason)
 		if type(engineName) == "string" and type(partName) == "string" then
-			partInspected:FireClient(player, engineName, partName, false)
+			partInspected:FireClient(player, engineName, partName, false, key)
 		end
 	end
 
@@ -183,7 +188,8 @@ partInspected.OnServerEvent:Connect(function(player, engineName, partName)
 	local model, why = resolvePart(player, engineName, partName)
 	if not model then return refuse(why) end
 
-	local key   = PartRules.InspectKey(engineName, partName)
+	local key = PartRules.InspectKeyForModel(model)
+	if not key then return refuse("part has no engine") end
 	local start = inspectStarts[player]
 	inspectStarts[player] = nil
 
@@ -191,10 +197,10 @@ partInspected.OnServerEvent:Connect(function(player, engineName, partName)
 	if profile.Data.inspectedForXp[key] then return end
 
 	if not start or start.key ~= key then
-		return refuse("no matching InspectStart")
+		return refuse("no matching InspectStart", key)
 	end
 	if os.clock() - start.at < PartRules.INSPECT_DWELL_TIME - TIMING_TOLERANCE then
-		return refuse("held for less than the dwell time")
+		return refuse("held for less than the dwell time", key)
 	end
 
 	-- Saved, so it survives rejoining, can't be re-farmed after a reinstall,

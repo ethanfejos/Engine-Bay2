@@ -22,6 +22,8 @@ UITheme.Colors = {
 	Warning   = Color3.fromRGB(230, 150, 30),  -- replace, needs replacing
 	Danger    = Color3.fromRGB(255, 70, 70),   -- refusals, clear inventory, badges
 	Money     = Color3.fromRGB(255, 205, 90),
+	Star      = Color3.fromRGB(255, 200, 60),  -- filled reputation stars
+	StarEmpty = Color3.fromRGB(30, 30, 30),    -- unfilled reputation stars (outlined in Text)
 
 	Track     = Color3.fromRGB(40, 40, 40),    -- empty part of every bar
 	Disabled  = Color3.fromRGB(70, 70, 70),    -- greyed-out buttons

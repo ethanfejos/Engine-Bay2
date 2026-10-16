@@ -86,6 +86,7 @@ type Drop = {
 	modelName: string,
 	wear: number,
 	engineName: string,
+	carId: string?,
 	relativeData: Types.RelativeData?,
 	zoneName: string,
 	instance: Model,
@@ -272,6 +273,7 @@ local function itemRecord(itemId: string, drop: Drop): Types.InventoryItem
 		name         = drop.modelName,
 		wear         = drop.wear,
 		engineName   = drop.engineName,
+		carId        = drop.carId,
 		relativeData = drop.relativeData,
 	}
 end
@@ -303,7 +305,7 @@ function PartPickupService.CollectPart(itemId: string)
 
 	-- Into the inventory first, then off the saved "on the floor" list, so
 	-- there's never a moment where the save has the part in neither.
-	InventoryService.AddPart(drop.player, drop.modelName, drop.wear, drop.engineName, drop.relativeData, itemId)
+	InventoryService.AddPart(drop.player, drop.modelName, drop.wear, drop.engineName, drop.carId, drop.relativeData, itemId)
 	forgetDropped(drop.player, itemId)
 
 	if drop.instance and drop.instance.Parent then
@@ -316,7 +318,7 @@ end
 -- Called by EngineServer while the removed part still exists, so its look
 -- and position can be copied.
 function PartPickupService.DropPart(player: Player, sourceModel: Model, modelName: string, wear: number,
-	engineName: string, relativeData: Types.RelativeData?, itemId: string, zoneName: string)
+	engineName: string, carId: string?, relativeData: Types.RelativeData?, itemId: string, zoneName: string)
 	local dropClone = makeVisualCopy(sourceModel)
 	dropClone.Name  = modelName
 	dropClone:SetAttribute("OwnerUserId", player.UserId)
@@ -357,6 +359,7 @@ function PartPickupService.DropPart(player: Player, sourceModel: Model, modelNam
 		modelName    = modelName,
 		wear         = wear,
 		engineName   = engineName,
+		carId        = carId,
 		relativeData = relativeData,
 		zoneName     = zoneName,
 		instance     = dropClone,

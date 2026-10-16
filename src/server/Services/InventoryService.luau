@@ -27,6 +27,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 -- unchanged.
 local ProfileService = require(script.Parent.Parent.Modules.ProfileManager)
 local ZoneUtils      = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
+local CarUtils       = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("CarUtils"))
 local PartRules      = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("PartRules"))
 
 -- ── Remotes ───────────────────────────────────────────────────────────────────
@@ -49,7 +50,7 @@ local clearInventory       = Remotes.ClearInventory
 local InventoryService = {}
 
 function InventoryService.AddPart(player: Player, partName: string, wear: number, engineName: string,
-	relativeData: Types.RelativeData?, itemId: string)
+	carId: string?, relativeData: Types.RelativeData?, itemId: string)
 	local profile = ProfileService.GetProfile(player)
 	if not profile then return end
 
@@ -63,6 +64,7 @@ function InventoryService.AddPart(player: Player, partName: string, wear: number
 		name         = partName,
 		wear         = wear,
 		engineName   = engineName,
+		carId        = carId,
 		relativeData = relativeData,
 	})
 
@@ -163,6 +165,17 @@ reinstallEvent.OnServerEvent:Connect(function(player, itemId)
 	if not engine or engine.Name ~= engineName then
 		warn("[InventoryService] Engine mismatch for:", player.Name)
 		rejectReinstall(player, "FAILED", "wrong engine")
+		return
+	end
+
+	if not CarUtils.IsOwnedBy(engine, player) then
+		rejectReinstall(player, "FAILED", "not your car")
+		return
+	end
+
+	-- A part goes back into the car it came from (see CarUtils.PartFits).
+	if not CarUtils.PartFits(item.carId, engineName, engine) then
+		rejectReinstall(player, "FAILED", "from a different car")
 		return
 	end
 

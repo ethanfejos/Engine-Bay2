@@ -28,6 +28,7 @@ local PartRules      = require(Modules:WaitForChild("PartRules"))
 local Remotes        = require(Modules:WaitForChild("Remotes"))
 local ClientSignals  = require(Modules:WaitForChild("ClientSignals"))
 local Types          = require(Modules:WaitForChild("Types"))
+local CarUtils       = require(Modules:WaitForChild("CarUtils"))
 
 local reinstallEvent = Remotes.ReinstallPart
 local templateFolder = ReplicatedStorage:WaitForChild("EnginePartTemplates")
@@ -47,15 +48,16 @@ local selectedPart: string?             = nil
 local selectedEngine: string?           = nil
 local selectedRelData: RelativeData?    = nil
 local selectedItemId: string?           = nil
+local selectedCarId: string?            = nil
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
 -- The engine a ghost belongs to is whatever is parked in the bay the player
--- is standing in (any car, any engine) — not a fixed engine in a fixed folder.
--- It only counts if its name matches the engine the selected part came from.
-local function getEngine(engineName: string): Model?
+-- is standing in. It only counts if it's the player's own car and the part
+-- belongs in it (same rule as the server: CarUtils.PartFits).
+local function getEngine(engineName: string, carId: string?): Model?
 	local engine = ZoneUtils.GetEngineForPlayer(player)
-	if engine and engine.Name == engineName then
+	if engine and CarUtils.IsOwnedBy(engine, player) and CarUtils.PartFits(carId, engineName, engine) then
 		return engine
 	end
 	return nil
@@ -131,17 +133,19 @@ local function showGhost(partName: string, engineName: string, engine: Model, re
 	HC.CreateStencil(GHOST_KEY, ghost, GHOST_COLOR)
 end
 
-local function onSelectionChanged(itemId: string?, partName: string?, engineName: string?, relativeData: RelativeData?)
+local function onSelectionChanged(itemId: string?, partName: string?, engineName: string?,
+	relativeData: RelativeData?, carId: string?)
 	selectedItemId   = itemId
 	selectedPart     = partName
 	selectedEngine   = engineName
 	selectedRelData  = relativeData
+	selectedCarId    = carId
 
 	clearGhost()
 
 	if not partName or not engineName then return end
 
-	local engine = getEngine(engineName)
+	local engine = getEngine(engineName, carId)
 	if not engine then return end
 
 	if canShowGhost(partName, engineName, engine) then
@@ -192,7 +196,7 @@ EngineContext.OnViewChanged(function(inView)
 		clearGhost()
 	else
 		if selectedPart and selectedEngine then
-			onSelectionChanged(selectedItemId, selectedPart, selectedEngine, selectedRelData)
+			onSelectionChanged(selectedItemId, selectedPart, selectedEngine, selectedRelData, selectedCarId)
 		end
 	end
 end)

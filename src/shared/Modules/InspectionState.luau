@@ -7,7 +7,7 @@
     - how far through the hold-to-inspect the player is (0–1)
     - which parts this player has inspected
 
-    Inspected parts are keyed by PartRules.InspectKey ("engine:part"), the
+    Inspected parts are keyed by PartRules.InspectKey ("carId:part"), the
     same key the server saves, so a reinstalled part stays inspected.
 
     The server is the authority. This module listens for:
@@ -122,10 +122,11 @@ if RunService:IsClient() then
 			end
 		end)
 
-		Remotes.PartInspected.OnClientEvent:Connect(function(engineName, partName, accepted)
+		Remotes.PartInspected.OnClientEvent:Connect(function(engineName, partName, accepted, serverKey)
 			if accepted ~= false then return end
 			if type(engineName) ~= "string" or type(partName) ~= "string" then return end
-			local key = PartRules.InspectKey(engineName, partName)
+			-- The server sends the exact (per-car) key when it knows the part.
+			local key = if type(serverKey) == "string" then serverKey else PartRules.InspectKey(engineName, partName)
 			if _inspectedModels[key] then
 				_inspectedModels[key] = nil
 				fireListeners(_inspectedListeners, nil, false, key)

@@ -39,13 +39,13 @@ export type Data = {
 local SaveData = {}
 
 -- Bump this together with adding a MIGRATIONS step.
-SaveData.CURRENT_VERSION = 1
+SaveData.CURRENT_VERSION = 2
 
 -- What a brand-new player starts with.
 local TEMPLATE: Data = {
 	dataVersion = SaveData.CURRENT_VERSION,
 
-	-- Parts held: list of { id, name, wear, engineName, relativeData }
+	-- Parts held: list of { id, name, wear, engineName, carId, relativeData }
 	inventory = {},
 
 	-- Parts lying on the floor, not yet picked up: [id] = same shape as an
@@ -56,7 +56,7 @@ local TEMPLATE: Data = {
 
 	xp = 0,
 
-	-- Parts this player has inspected: ["engineName:partName"] = true
+	-- Parts this player has inspected: ["carId:partName"] = true
 	inspectedForXp = {},
 
 	-- Testing-phase starting balance; see the migration example above.
@@ -69,6 +69,13 @@ local MIGRATIONS: { [number]: (data: any) -> () } = {
 	-- 1: first versioned format. Saves from before versioning already have
 	-- every field (Reconcile filled them in), so nothing to change.
 	[1] = function(_data) end,
+
+	-- 2: inspections are now remembered per car ("carId:part"), not per
+	-- engine name. The old keys can't be matched to a car, so they go;
+	-- parts just need inspecting again once.
+	[2] = function(data)
+		data.inspectedForXp = {}
+	end,
 }
 
 -- Runs every migration the save hasn't had. Must run BEFORE Reconcile:
@@ -118,6 +125,7 @@ local function cleanItem(item: any): (Item?, string?)
 		id           = item.id,
 		name         = item.name,
 		engineName   = item.engineName,
+		carId        = if type(item.carId) == "string" and item.carId ~= "" then item.carId else nil,
 		wear         = math.clamp(wear, 0, 100),
 		relativeData = cleanRelativeData(item.relativeData),
 	} :: Item), nil

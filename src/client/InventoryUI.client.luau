@@ -6,7 +6,7 @@
 
     Each row shows:
     - the part name, and under it the engine it came from plus a status:
-        FITS HERE        can be reinstalled in the engine in your bay now
+        FITS HERE        can be reinstalled in your car, in your bay, now
         NEEDS REPLACING  too worn to repair (RepairRules)
         PERFECT          100% condition
     - its condition %, coloured with the same WearColors scale as the
@@ -44,6 +44,7 @@ local ZoneUtils     = require(Shared:WaitForChild("Modules"):WaitForChild("ZoneU
 local Remotes       = require(Shared:WaitForChild("Modules"):WaitForChild("Remotes"))
 local ClientSignals = require(Shared:WaitForChild("Modules"):WaitForChild("ClientSignals"))
 local Types         = require(Shared:WaitForChild("Modules"):WaitForChild("Types"))
+local CarUtils      = require(Shared:WaitForChild("Modules"):WaitForChild("CarUtils"))
 local UITheme       = require(Shared:WaitForChild("UI"):WaitForChild("UITheme"))
 
 local C, F = UITheme.Colors, UITheme.Fonts
@@ -334,7 +335,8 @@ end)
 -- reinstall would really be accepted right now.
 local function getStatus(item: Item, bayEngine: Model?): (string?, Color3?)
 	local wear = tonumber(item.wear) or 0
-	if bayEngine and bayEngine.Name == item.engineName
+	if bayEngine and CarUtils.IsOwnedBy(bayEngine, player)
+		and CarUtils.PartFits(item.carId, item.engineName, bayEngine)
 		and not bayEngine:FindFirstChild(item.name) then
 		local template = RepairRules.FindTemplate(item.engineName, item.name)
 		if template and PartRules.GetReinstallBlocker(template, bayEngine) == nil then
@@ -384,9 +386,9 @@ local function setSelected(itemId: string?)
 	selectedId = newId
 	highlightSelection()
 	if item then
-		ClientSignals.PartSelected:Fire(item.id, item.name, item.engineName, item.relativeData)
+		ClientSignals.PartSelected:Fire(item.id, item.name, item.engineName, item.relativeData, item.carId)
 	else
-		ClientSignals.PartSelected:Fire(nil, nil, nil, nil)
+		ClientSignals.PartSelected:Fire(nil, nil, nil, nil, nil)
 	end
 end
 

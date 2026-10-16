@@ -22,7 +22,8 @@ export type RelativeData = {
 export type InventoryItem = {
 	id: string,
 	name: string,
-	engineName: string,
+	engineName: string,           -- engine type: finds the part's template
+	carId: string?,               -- the car it came from (nil: from before car ids)
 	wear: number,                 -- 0–100
 	relativeData: RelativeData?,  -- nil: reinstall at the template's own position
 }

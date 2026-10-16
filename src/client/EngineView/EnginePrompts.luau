@@ -20,6 +20,11 @@
 
     onEnter is only called when the player is standing in the same zone as
     the engine and the engine is visible.
+
+    Cars and owners (CarService / CarUtils): the prompt only shows on YOUR
+    car, or as "Claim car" on a car nobody owns while you don't own one yet.
+    Claiming fires ClaimCar; once the server sets you as the owner, the
+    same prompt turns back into the normal engine-bay prompt.
 ]]
 
 local Players           = game:GetService("Players")
@@ -28,12 +33,15 @@ local Workspace         = game:GetService("Workspace")
 
 local Modules   = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules")
 local ZoneUtils = require(Modules:WaitForChild("ZoneUtils"))
+local CarUtils  = require(Modules:WaitForChild("CarUtils"))
+local Remotes   = require(Modules:WaitForChild("Remotes"))
 local Log       = require(Modules:WaitForChild("Log"))
 
 local log    = Log.new("EnginePrompts")
 local player = Players.LocalPlayer
 
-local CHECK_INTERVAL = 0.25 -- seconds; how quickly a prompt appears once a car is parked
+local CHECK_INTERVAL = 0.25 -- seconds; how quickly a prompt appears once a car is parked or claimed
+local CLAIM_TEXT     = "Claim car"
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 
@@ -43,6 +51,9 @@ type OnEnter = (engine: Model, prompt: ProximityPrompt) -> ()
 local wired: { [Instance]: ProximityPrompt | false } = {}
 local viewingEngine: Model?     = nil
 local onEnterCallback: OnEnter? = nil
+
+-- Each prompt's own ActionText from the place file, restored after "Claim car".
+local actionTexts: { [ProximityPrompt]: string } = {}
 
 -- ── Checks ────────────────────────────────────────────────────────────────────
 
@@ -59,13 +70,27 @@ local function isModelVisible(model: Model): boolean
 	return false
 end
 
-local function shouldBeEnabled(engine: Model): boolean
-	if engine == viewingEngine then return false end
-	return ZoneUtils.GetZoneForPosition(engine:GetPivot().Position) ~= nil
+-- What this engine's prompt does for you: "enter" (your car), "claim"
+-- (nobody's car, and you don't have one yet), or nil (someone else's car,
+-- or you already own a different one) — hidden.
+type Mode = "enter" | "claim"
+local function promptMode(engine: Model): Mode?
+	local owner = CarUtils.GetOwnerUserId(engine)
+	if owner == player.UserId then return "enter" end
+	if owner == nil and CarUtils.FindCarOwnedBy(player.UserId) == nil then return "claim" end
+	return nil
 end
 
 local function refresh(engine: Model, prompt: ProximityPrompt)
-	local enabled = shouldBeEnabled(engine)
+	local mode = promptMode(engine)
+	local enabled = mode ~= nil
+		and engine ~= viewingEngine
+		and ZoneUtils.GetZoneForPosition(engine:GetPivot().Position) ~= nil
+
+	local text = if mode == "claim" then CLAIM_TEXT else (actionTexts[prompt] or prompt.ActionText)
+	if prompt.ActionText ~= text then
+		prompt.ActionText = text
+	end
 	if prompt.Enabled ~= enabled then
 		prompt.Enabled = enabled
 	end
@@ -102,6 +127,7 @@ local function wire(engine: Model)
 	end
 
 	wired[engine] = prompt
+	actionTexts[prompt] = prompt.ActionText
 	refresh(engine, prompt)
 	log.debug("Wired", engine:GetFullName())
 
@@ -117,6 +143,19 @@ local function wire(engine: Model)
 			log.debug("Entry blocked: no visible part on", engine.Name)
 			return
 		end
+
+		local mode = promptMode(engine)
+		if mode == "claim" then
+			local carId = CarUtils.GetCarId(engine)
+			if carId then
+				Remotes.ClaimCar:FireServer(carId)
+			end
+			return
+		elseif mode ~= "enter" then
+			log.debug("Entry blocked: not your car", engine.Name)
+			return
+		end
+
 		local onEnter = onEnterCallback
 		if onEnter then
 			onEnter(engine, prompt)

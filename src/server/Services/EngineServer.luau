@@ -9,7 +9,7 @@
     The server re-checks every rule, using the same PartRules the Wrench
     uses for its hints:
     - the part is a real Inspectable part or bolt in the engine parked in
-      the bay the player is standing in
+      the bay the player is standing in, and the player owns that car
     - parts (not bolts) have been inspected by this player
     - nothing is still in the way (Requires / bolts)
     - it isn't already being removed
@@ -18,7 +18,7 @@
     show why and unlock:  (status, model, detail)
       "BLOCKED"        detail = the part or bolt that must come off first
       "NOT_INSPECTED"  part hasn't been inspected yet
-      "FAILED"         detail = short reason (not in a bay, wrong engine...)
+      "FAILED"         detail = short reason (not in a bay, not your car...)
     Success is signalled by PartRemoving (server -> client), which also
     plays the removal animation.
 ]]
@@ -31,6 +31,7 @@ local PartPickupService = require(script.Parent.PartPickupService)
 local ProfileManager    = require(script.Parent.Parent.Modules.ProfileManager)
 local ZoneUtils         = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 local PartRules         = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("PartRules"))
+local CarUtils          = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("CarUtils"))
 
 -- ── Physics stabilization on removal ────────────────────────────────────────────
 -- Destroying a part removes real mass from a live, unanchored vehicle, and
@@ -162,6 +163,10 @@ removeEvent.OnServerEvent:Connect(function(player, model)
 		refuse(player, "FAILED", model, "not in this bay's engine")
 		return
 	end
+	if not CarUtils.IsOwnedBy(engine, player) then
+		refuse(player, "FAILED", model, "not your car")
+		return
+	end
 
 	-- Bolts — no inspection needed, no inventory, just removed
 	if isBolt then
@@ -200,6 +205,7 @@ removeEvent.OnServerEvent:Connect(function(player, model)
 	-- Capture data before destroy
 	local modelName    = model.Name
 	local engineName   = engine.Name
+	local carId        = CarUtils.GetCarId(engine)
 	local wear         = tonumber(model:GetAttribute("Wear")) or 100
 
 	-- Calculate CFrame relative to engine pivot
@@ -236,7 +242,7 @@ removeEvent.OnServerEvent:Connect(function(player, model)
 			-- DropPart clones the model for the pickup object before this
 			-- destroys the original — the part no longer goes straight into
 			-- inventory, it has to be picked up from where it was removed.
-			PartPickupService.DropPart(player, model, modelName, wear, engineName, relativeData, itemId, zone.Name)
+			PartPickupService.DropPart(player, model, modelName, wear, engineName, carId, relativeData, itemId, zone.Name)
 			model:Destroy()
 		end)
 

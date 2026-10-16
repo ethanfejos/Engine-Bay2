@@ -62,6 +62,14 @@ type Profile   = ProfileManager.Profile
 local STARTER_MODEL: string? = nil  -- starter car template; nil = first in ServerStorage.Cars (A–Z)
 local FLOOR_GAP              = 0.05 -- studs left under the car when placing it
 
+-- Cars in a bay are held perfectly still: their own scripts (e.g. the
+-- A-Chassis driving scripts) are switched off and every part is anchored.
+-- With live suspension, every part taken out made the car bounce, and parts
+-- went back in the wrong place because the engine had moved under them.
+-- Customers' cars are never driven; turn this off once players drive their
+-- own cars in and out.
+local HOLD_STILL_IN_BAY      = true
+
 local CarService = {}
 
 -- Fired with (carId) whenever a spawned car's record changes because a part
@@ -222,6 +230,19 @@ end
 
 -- ── Placing a car ─────────────────────────────────────────────────────────────
 
+-- Switches off the car's own scripts and anchors every part (see
+-- HOLD_STILL_IN_BAY). Done before the car enters the world, so nothing in
+-- it ever runs or moves.
+local function holdStill(car: Model)
+	for _, d in ipairs(car:GetDescendants()) do
+		if d:IsA("BaseScript") then
+			d.Enabled = false
+		elseif d:IsA("BasePart") then
+			d.Anchored = true
+		end
+	end
+end
+
 -- Half the height a box really takes up in the world, whatever way it's
 -- rotated (a model's bounding box follows its pivot, which on many cars —
 -- A-Chassis included — isn't upright).
@@ -352,6 +373,9 @@ function CarService.SpawnCar(worker: Player, record: CarRecord, zone: BasePart, 
 			car:SetAttribute(CarUtils.OWNER_ATTRIBUTE, worker.UserId)
 		end
 		applyRecord(car, record)
+		if HOLD_STILL_IN_BAY then
+			holdStill(car)
+		end
 		placeInZone(car, zone)
 		car.Parent = carsFolder
 		register(car)

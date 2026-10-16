@@ -30,12 +30,14 @@ local ORDER = {
 	{ Services, "InventoryService" },
 	{ Services, "LevelService" },
 	{ Services, "MoneyService" },
+	{ Services, "ReputationService" },
+	{ Services, "TonyService" },       -- needs Money
 	{ Services, "PartPickupService" }, -- needs Inventory + Zone
 	{ Services, "EngineServer" },      -- needs Level + PartPickup
 	{ Services, "RepairService" },     -- needs Inventory + Level + Money
 	{ Services, "ToolService" },       -- needs Zone
-	{ Services, "JobService" },        -- needs Car, Money, Level, Inventory, PartPickup
-	{ Services, "BayRentalService" },  -- needs Car, Money, Job
+	{ Services, "JobService" },        -- needs Car, Money, Level, Inventory, PartPickup, Reputation, Tony
+	{ Services, "BayRentalService" },  -- needs Car, Money, Tony, Job
 }
 
 local started, failed = 0, 0

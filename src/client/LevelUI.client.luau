@@ -2,18 +2,21 @@
 --[[
     LevelUI (LocalScript)
     ---------------------
-    Always-visible level + XP bar in the bottom-left corner, plus a
-    level-up popup banner. Purely a display — all XP math and awarding
-    happens server-side in LevelService; this just renders what it's told.
-    Also renders the money balance next to it, same "just display what
-    the server says" approach, driven by MoneyService.
+    The level, XP and money card in the bottom-left corner (UI "Option D":
+    glass), plus a level-up banner. Purely a display — LevelService,
+    MoneyService and TonyService decide everything; this shows it.
 
-    - XpUpdated     (server -> client): updates the bar/label, tweened
-    - LeveledUp     (server -> client): triggers the popup + a pulse on
-      the level label
-    - MoneyUpdated  (server -> client): updates the money label
-    - Fires RequestXp and RequestMoney on join to get current values
-      immediately, same pattern InventoryUI uses for RequestInventory.
+        [LVL 4] ━━━━━━━━━━──────  310/500
+        $1,240   Owe Tony $50
+
+    - XpUpdated     (server -> client): the bar and numbers, tweened
+    - LeveledUp     (server -> client): the banner + a pulse on the pill
+    - MoneyUpdated  (server -> client): the money, with a "+$38" / "−$3"
+      that floats up off it when it changes
+    - TonyStatus    (server -> client): "Owe Tony $X" while you're in debt
+    - The little arrow folds the card down to just the money (and opens it
+      again).
+    - Fires RequestXp and RequestMoney on join to get current values.
 ]]
 
 local Players           = game:GetService("Players")
@@ -23,166 +26,196 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local Remotes = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Remotes"))
+local Shared  = ReplicatedStorage:WaitForChild("Shared")
+local Remotes = require(Shared:WaitForChild("Modules"):WaitForChild("Remotes"))
+local UITheme = require(Shared:WaitForChild("UI"):WaitForChild("UITheme"))
+local C, FF   = UITheme.Colors, UITheme.Faces
 
-local xpUpdatedEvent    = Remotes.XpUpdated
-local leveledUpEvent    = Remotes.LeveledUp
-local requestXpEvent    = Remotes.RequestXp
-local moneyUpdatedEvent = Remotes.MoneyUpdated
-local requestMoneyEvent = Remotes.RequestMoney
-
-local UITheme = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("UI"):WaitForChild("UITheme"))
-local C, F    = UITheme.Colors, UITheme.Fonts
-
--- ── Build GUI ─────────────────────────────────────────────────────────────────
+-- ── Build ─────────────────────────────────────────────────────────────────────
 
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "LevelUI"
 screenGui.ResetOnSpawn = false
-screenGui.IgnoreGuiInset = false
 screenGui.Parent = playerGui
 
-local container = Instance.new("Frame")
-container.Name = "LevelContainer"
-container.AnchorPoint = Vector2.new(0, 1)
-container.Position = UDim2.new(0, 24, 1, -24)
-container.Size = UDim2.new(0, 220, 0, 68)
-container.BackgroundTransparency = 1
-container.Parent = screenGui
+local card = Instance.new("Frame")
+card.Name = "LevelCard"
+card.AnchorPoint = Vector2.new(0, 1)
+card.Position = UDim2.new(0, 20, 1, -20)
+card.Size = UDim2.new(0, 270, 0, 0)
+card.AutomaticSize = Enum.AutomaticSize.Y
+card.Parent = screenGui
+UITheme.Glass(card)
+UITheme.Pad(card, 12, 14)
+UITheme.List(card, 8)
 
-local levelLabel = Instance.new("TextLabel")
-levelLabel.Name = "LevelLabel"
-levelLabel.BackgroundTransparency = 1
-levelLabel.Size = UDim2.new(1, 0, 0, 20)
-levelLabel.Position = UDim2.new(0, 0, 0, 0)
-levelLabel.Font = F.Bold
-levelLabel.TextSize = 16
-levelLabel.TextColor3 = C.Text
-levelLabel.TextXAlignment = Enum.TextXAlignment.Left
-levelLabel.Text = "LEVEL 1"
-levelLabel.Parent = container
+-- Row 1: level pill, bar, numbers
+local xpRow = Instance.new("Frame")
+xpRow.Size = UDim2.new(1, 0, 0, 20)
+xpRow.BackgroundTransparency = 1
+xpRow.LayoutOrder = 1
+xpRow.Parent = card
 
-local xpLabel = Instance.new("TextLabel")
-xpLabel.Name = "XpLabel"
-xpLabel.BackgroundTransparency = 1
-xpLabel.Size = UDim2.new(1, 0, 0, 20)
-xpLabel.Position = UDim2.new(0, 0, 0, 0)
-xpLabel.Font = F.Regular
-xpLabel.TextSize = 12
-xpLabel.TextColor3 = C.TextDim
-xpLabel.TextXAlignment = Enum.TextXAlignment.Right
-xpLabel.Text = "0 / 100 XP"
-xpLabel.Parent = container
+local levelPill = UITheme.Text(xpRow, "LVL 1", FF.Heavy, 12, C.Glass)
+levelPill.Size = UDim2.new(0, 52, 1, 0)
+levelPill.TextXAlignment = Enum.TextXAlignment.Center
+levelPill.BackgroundColor3 = C.Done
+levelPill.BackgroundTransparency = 0
+UITheme.Corner(levelPill, UDim.new(0, 6))
 
 local track = Instance.new("Frame")
-track.Name = "Track"
-track.BackgroundColor3 = C.Track
+track.Position = UDim2.new(0, 60, 0.5, -4)
+track.Size = UDim2.new(1, -60 - 72, 0, 8)
+track.BackgroundColor3 = Color3.new(1, 1, 1)
+track.BackgroundTransparency = 0.92
 track.BorderSizePixel = 0
-track.Size = UDim2.new(1, 0, 0, 10)
-track.Position = UDim2.new(0, 0, 0, 26)
-track.Parent = container
+track.Parent = xpRow
 UITheme.Corner(track, UITheme.Radius.Pill)
 
 local fill = Instance.new("Frame")
-fill.Name = "Fill"
-fill.BackgroundColor3 = C.Accent
-fill.BorderSizePixel = 0
 fill.Size = UDim2.new(0, 0, 1, 0)
+fill.BackgroundColor3 = C.Done
+fill.BorderSizePixel = 0
 fill.Parent = track
 UITheme.Corner(fill, UITheme.Radius.Pill)
 
--- Money, right next to the XP bar — just the running total, no breakdown.
-local moneyLabel = Instance.new("TextLabel")
-moneyLabel.Name = "MoneyLabel"
-moneyLabel.BackgroundTransparency = 1
-moneyLabel.Size = UDim2.new(1, 0, 0, 20)
-moneyLabel.Position = UDim2.new(0, 0, 0, 42)
-moneyLabel.Font = F.Bold
-moneyLabel.TextSize = 16
-moneyLabel.TextColor3 = C.Money
-moneyLabel.TextXAlignment = Enum.TextXAlignment.Left
-moneyLabel.Text = "$0"
-moneyLabel.Parent = container
+local xpLabel = UITheme.Text(xpRow, "0/100", FF.Mono, 11, C.GlassMuted)
+xpLabel.AnchorPoint = Vector2.new(1, 0)
+xpLabel.Position = UDim2.new(1, 0, 0, 0)
+xpLabel.Size = UDim2.new(0, 66, 1, 0)
+xpLabel.TextXAlignment = Enum.TextXAlignment.Right
 
--- ── Level-up popup ────────────────────────────────────────────────────────────
+-- Row 2: money and debt
+local moneyRow = Instance.new("Frame")
+moneyRow.Size = UDim2.new(1, 0, 0, 26)
+moneyRow.BackgroundTransparency = 1
+moneyRow.LayoutOrder = 2
+moneyRow.Parent = card
 
-local popup = Instance.new("TextLabel")
+local moneyLabel = UITheme.Text(moneyRow, "$0", FF.MonoB, 22, C.Amber)
+moneyLabel.Size = UDim2.new(0.55, 0, 1, 0)
+
+local debtLabel = UITheme.Text(moneyRow, "", FF.Bold, 13, C.BadText)
+debtLabel.AnchorPoint = Vector2.new(1, 0)
+debtLabel.Position = UDim2.new(1, 0, 0, 0)
+debtLabel.Position = UDim2.new(1, -28, 0, 0)
+debtLabel.Size = UDim2.new(0.45, -28, 1, 0)
+debtLabel.TextXAlignment = Enum.TextXAlignment.Right
+debtLabel.Visible = false
+
+-- Fold arrow: hides the level row, leaving just the money
+local foldBtn = Instance.new("TextButton")
+foldBtn.AnchorPoint = Vector2.new(1, 0.5)
+foldBtn.Position = UDim2.new(1, 0, 0.5, 0)
+foldBtn.Size = UDim2.new(0, 22, 0, 22)
+foldBtn.BackgroundColor3 = Color3.new(1, 1, 1)
+foldBtn.BackgroundTransparency = 0.92
+foldBtn.Font = Enum.Font.GothamBold -- has the ▲▼ arrows
+foldBtn.Text = "▼"
+foldBtn.TextSize = 10
+foldBtn.TextColor3 = C.GlassMuted
+foldBtn.Parent = moneyRow
+UITheme.Corner(foldBtn, UITheme.Radius.Pill)
+
+local folded = false
+foldBtn.MouseButton1Click:Connect(function()
+	folded = not folded
+	xpRow.Visible = not folded
+	foldBtn.Text = if folded then "▲" else "▼"
+end)
+
+-- ── Level-up banner ───────────────────────────────────────────────────────────
+
+local popup = UITheme.Text(screenGui, "", FF.Heavy, 40, C.Done)
 popup.Name = "LevelUpPopup"
 popup.AnchorPoint = Vector2.new(0.5, 0.5)
 popup.Position = UDim2.new(0.5, 0, 0.35, 0)
-popup.Size = UDim2.new(0, 400, 0, 60)
-popup.BackgroundTransparency = 1
-popup.Font = F.Bold
-popup.TextSize = 36
-popup.TextColor3 = C.Accent
+popup.Size = UDim2.new(0, 500, 0, 60)
+popup.TextXAlignment = Enum.TextXAlignment.Center
 popup.TextTransparency = 1
-popup.Text = ""
-popup.Parent = screenGui
+popup.TextStrokeColor3 = C.Glass
+popup.TextStrokeTransparency = 1
 
-local function showLevelUpPopup(newLevel)
-	popup.Text = "LEVEL UP! — LVL " .. newLevel
+local function showLevelUpPopup(newLevel: number)
+	popup.Text = "LEVEL UP!  ·  LVL " .. newLevel
 	popup.TextTransparency = 1
+	popup.TextStrokeTransparency = 1
 	popup.Position = UDim2.new(0.5, 0, 0.4, 0)
 
-	local fadeIn = TweenService:Create(popup, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+	local fadeIn = TweenService:Create(popup, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
 		TextTransparency = 0,
+		TextStrokeTransparency = 0.5,
 		Position = UDim2.new(0.5, 0, 0.35, 0),
 	})
 	fadeIn:Play()
 	fadeIn.Completed:Wait()
-
 	task.wait(1.2)
-
-	local fadeOut = TweenService:Create(popup, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+	TweenService:Create(popup, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
 		TextTransparency = 1,
+		TextStrokeTransparency = 1,
 		Position = UDim2.new(0.5, 0, 0.3, 0),
-	})
-	fadeOut:Play()
+	}):Play()
 end
 
--- Quick color pulse on the level label itself, so the bar area also reacts
--- even if the player's looking away from the popup.
-local function pulseLevelLabel()
-	local original = levelLabel.TextColor3
-	TweenService:Create(levelLabel, TweenInfo.new(0.12), { TextColor3 = C.Accent }):Play()
+local function pulseLevelPill()
+	TweenService:Create(levelPill, TweenInfo.new(0.12), { BackgroundColor3 = C.Amber }):Play()
 	task.delay(0.12, function()
-		TweenService:Create(levelLabel, TweenInfo.new(0.4), { TextColor3 = original }):Play()
+		TweenService:Create(levelPill, TweenInfo.new(0.4), { BackgroundColor3 = C.Done }):Play()
 	end)
 end
 
--- ── Formatting ────────────────────────────────────────────────────────────────
-
--- "100000" -> "100,000" — thousands separators, no decimals (money is
--- always a whole-dollar amount here).
-local function formatMoney(amount)
-	local sign = amount < 0 and "-" or ""
-	local digits = tostring(math.abs(math.floor(amount)))
-	local withCommas = digits:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
-	return sign .. "$" .. withCommas
+-- "+$38" / "-$3" floating up off the money.
+local function moneyPop(delta: number)
+	-- In the money row (which has no layout), starting just over the number.
+	local pop = UITheme.Text(moneyRow, (if delta > 0 then "+" else "") .. UITheme.Money(delta), FF.MonoB, 16,
+		if delta > 0 then C.Done else C.BadText)
+	pop.Position = UDim2.new(0, 0, 0, -6)
+	pop.Size = UDim2.new(0, 120, 0, 20)
+	pop.ZIndex = 5
+	local tween = TweenService:Create(pop, TweenInfo.new(1.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		Position = UDim2.new(0, 0, 0, -46),
+		TextTransparency = 1,
+	})
+	tween.Completed:Connect(function() pop:Destroy() end)
+	tween:Play()
 end
 
--- ── Event handlers ────────────────────────────────────────────────────────────
+-- ── Events ────────────────────────────────────────────────────────────────────
 
-xpUpdatedEvent.OnClientEvent:Connect(function(totalXp, level, xpIntoLevel, xpForNextLevel)
-	levelLabel.Text = "LEVEL " .. level
-	xpLabel.Text = xpIntoLevel .. " / " .. xpForNextLevel .. " XP"
-
-	local progress = xpForNextLevel > 0 and math.clamp(xpIntoLevel / xpForNextLevel, 0, 1) or 0
+Remotes.XpUpdated.OnClientEvent:Connect(function(_totalXp: any, level: any, xpIntoLevel: any, xpForNextLevel: any)
+	local into, need = tonumber(xpIntoLevel) or 0, tonumber(xpForNextLevel) or 0
+	levelPill.Text = "LVL " .. tostring(level)
+	xpLabel.Text = ("%d/%d"):format(into, need)
+	local progress = if need > 0 then math.clamp(into / need, 0, 1) else 0
 	TweenService:Create(fill, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
 		Size = UDim2.new(progress, 0, 1, 0),
 	}):Play()
 end)
 
-leveledUpEvent.OnClientEvent:Connect(function(newLevel)
-	pulseLevelLabel()
-	task.spawn(showLevelUpPopup, newLevel)
+Remotes.LeveledUp.OnClientEvent:Connect(function(newLevel: any)
+	pulseLevelPill()
+	task.spawn(showLevelUpPopup, tonumber(newLevel) or 0)
 end)
 
-moneyUpdatedEvent.OnClientEvent:Connect(function(totalMoney)
-	moneyLabel.Text = formatMoney(totalMoney)
+local shownMoney: number? = nil
+Remotes.MoneyUpdated.OnClientEvent:Connect(function(totalMoney: any)
+	local total = tonumber(totalMoney)
+	if not total then return end
+	if shownMoney and total ~= shownMoney then
+		moneyPop(total - shownMoney)
+	end
+	shownMoney = total
+	moneyLabel.Text = UITheme.Money(total)
+end)
+
+Remotes.TonyStatus.OnClientEvent:Connect(function(status: any)
+	if type(status) ~= "table" then return end
+	local debt = tonumber(status.debt) or 0
+	debtLabel.Visible = debt > 0
+	debtLabel.Text = "Owe Tony " .. UITheme.Money(debt)
 end)
 
 -- ── Initial sync ──────────────────────────────────────────────────────────────
 
-requestXpEvent:FireServer()
-requestMoneyEvent:FireServer()
+Remotes.RequestXp:FireServer()
+Remotes.RequestMoney:FireServer()

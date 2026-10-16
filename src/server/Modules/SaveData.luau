@@ -63,6 +63,8 @@ export type Data = {
 	cars: { [string]: CarRecord },  -- [carId]
 	activeCarId: string?,           -- the car that spawns when they join
 	activeJob: JobRecord?,          -- the customer job in progress, if any
+	reputation: number,             -- stars, 0–5 in small steps (ReputationService)
+	tonyDebt: number,               -- what the player owes Tony, whole dollars (TonyService)
 }
 
 local SaveData = {}
@@ -94,6 +96,11 @@ local TEMPLATE: Data = {
 	-- Cars the player owns, [carId] = CarRecord, and which one is in use.
 	-- (activeCarId starts unset; CarService gives a new player a starter car.)
 	cars = {},
+
+	-- Everyone starts with no stars and owing Tony nothing. (Older saves get
+	-- these from Reconcile, so no migration step is needed.)
+	reputation = 0,
+	tonyDebt = 0,
 }
 SaveData.TEMPLATE = TEMPLATE
 
@@ -264,6 +271,24 @@ function SaveData.Sanitize(data: any): { string }
 		money = 0
 	end
 	data.money = math.floor(money :: number)
+
+	local reputation = tonumber(data.reputation)
+	if not reputation or reputation ~= reputation then
+		if data.reputation ~= nil then
+			table.insert(notes, "reputation reset (was " .. tostring(data.reputation) .. ")")
+		end
+		reputation = 0
+	end
+	data.reputation = math.clamp(reputation :: number, 0, 5)
+
+	local debt = tonumber(data.tonyDebt)
+	if not debt or debt ~= debt or debt < 0 then
+		if data.tonyDebt ~= nil then
+			table.insert(notes, "tonyDebt reset (was " .. tostring(data.tonyDebt) .. ")")
+		end
+		debt = 0
+	end
+	data.tonyDebt = math.floor(debt :: number)
 
 	-- Inventory: clean every item, drop broken ones and duplicate ids
 	local cleaned: { Item }, seen: { [string]: boolean } = {}, {}

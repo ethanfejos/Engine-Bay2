@@ -2,7 +2,8 @@
 --[[
     InventoryUI (LocalScript)
     -------------------------
-    The parts inventory panel on the right of the screen.
+    The parts inventory panel on the right of the screen (UI "Option D":
+    glass — it's your HUD).
 
     Each row shows:
     - the part name, and under it the engine it came from plus a status:
@@ -47,7 +48,7 @@ local Types         = require(Shared:WaitForChild("Modules"):WaitForChild("Types
 local CarUtils      = require(Shared:WaitForChild("Modules"):WaitForChild("CarUtils"))
 local UITheme       = require(Shared:WaitForChild("UI"):WaitForChild("UITheme"))
 
-local C, F = UITheme.Colors, UITheme.Fonts
+local C, FF = UITheme.Colors, UITheme.Faces
 
 -- ── Remotes & events ──────────────────────────────────────────────────────────
 
@@ -57,12 +58,16 @@ local clearInventory   = Remotes.ClearInventory
 
 -- ── Look ──────────────────────────────────────────────────────────────────────
 
-local PANEL_W    = 220
-local PANEL_H    = 360
+local PANEL_W    = 260
+local PANEL_MAX  = 560  -- tallest the panel gets; past that the list scrolls
+local TOP        = 64   -- px from the top of the screen (clears Roblox's top bar)
 local MARGIN     = 20
-local TOGGLE_W   = 18
-local TOGGLE_H   = 36
-local ROW_H      = 30
+local TOGGLE_W   = 22
+local TOGGLE_H   = 44
+local ROW_H      = 46
+local LIST_TOP   = 98   -- where the parts list starts
+local SORT_W     = 104  -- the sort button, beside the search box
+local CLEAR_H    = 30   -- the CLEAR INVENTORY button at the bottom
 local TWEEN_INFO = TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
 -- The layout is designed at 1080p and scaled up (never down) on taller screens.
@@ -74,15 +79,15 @@ local STATUS_REFRESH     = 0.5    -- seconds between "fits here" re-checks
 
 local SORT_MODES = {
 	{ label = "Name",        key = "name" },
-	{ label = "Condition ↑", key = "wearAsc" },
-	{ label = "Condition ↓", key = "wearDesc" },
+	{ label = "Worst first", key = "wearAsc" },
+	{ label = "Best first",  key = "wearDesc" },
 	{ label = "Engine",      key = "engine" },
 }
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 
 type Item = Types.InventoryItem
-type Row = { frame: Frame, indicator: Frame, name: TextLabel, detail: TextLabel, cond: TextLabel }
+type Row = { frame: Frame, stroke: UIStroke, name: TextLabel, detail: TextLabel, cond: TextLabel, bar: Frame }
 
 local inventory: { Item }        = {}    -- latest list from the server
 local rows: { [string]: Row }    = {}    -- [itemId] = row entry (see makeRow)
@@ -102,7 +107,7 @@ local function text(name: string, value: string, size: number, color: Color3,
 	l.Text                   = value
 	l.TextSize               = size
 	l.TextColor3             = color
-	l.Font                   = bold and F.Bold or F.Regular
+	l.FontFace               = bold and FF.Bold or FF.Body
 	l.BackgroundTransparency = 1
 	l.TextXAlignment         = xAlign or Enum.TextXAlignment.Left
 	l.TextYAlignment         = Enum.TextYAlignment.Center
@@ -112,28 +117,30 @@ local function text(name: string, value: string, size: number, color: Color3,
 	return l
 end
 
-local function divider(parent: Instance, y: number)
+local function divider(parent: Instance, y: number): Frame
 	local d                  = Instance.new("Frame")
-	d.Size                   = UDim2.new(1, -16, 0, 1)
-	d.Position               = UDim2.new(0, 8, 0, y)
+	d.Size                   = UDim2.new(1, 0, 0, 1)
+	d.Position               = UDim2.new(0, 0, 0, y)
 	d.BackgroundColor3       = C.Text
-	d.BackgroundTransparency = 0.7
+	d.BackgroundTransparency = 0.94
 	d.BorderSizePixel        = 0
 	d.Parent                 = parent
+	return d
 end
 
 local function flatButton(label: string, parent: Instance): TextButton
 	local b                  = Instance.new("TextButton")
 	b.BackgroundColor3       = C.Text
-	b.BackgroundTransparency = 0.92
+	b.BackgroundTransparency = 0.95
 	b.BorderSizePixel        = 0
-	b.Font                   = F.Bold
+	b.FontFace               = FF.Bold
 	b.Text                   = label
-	b.TextColor3             = C.Text
-	b.TextSize               = 10
+	b.TextColor3             = C.GlassText
+	b.TextSize               = 12
 	b.AutoButtonColor        = false
 	b.Parent                 = parent
-	UITheme.Corner(b)
+	UITheme.Corner(b, UDim.new(0, 8))
+	UITheme.Stroke(b, Color3.new(1, 1, 1), 1, 0.92)
 	return b
 end
 
@@ -153,105 +160,125 @@ local function updateScale()
 	uiScale.Scale = math.clamp(camera.ViewportSize.Y / DESIGN_HEIGHT, 1, MAX_SCALE)
 	-- When closed, the hidden distance depends on the scale, so re-place it.
 	if root and not panelOpen then
-		root.Position = UDim2.new(1, PANEL_W * uiScale.Scale, 0.5, 0)
+		root.Position = UDim2.new(1, PANEL_W * uiScale.Scale, 0, TOP)
 	end
 end
 camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
 updateScale()
 
--- Root sits on the right edge, vertically centred. AnchorPoint (1, 0.5)
--- keeps it in place whatever UIScale does to its size.
+-- Root sits on the right edge near the top and grows downwards with the
+-- parts list (resizePanel). AnchorPoint (1, 0) keeps it in place whatever
+-- UIScale does to its size.
 root                        = Instance.new("Frame")
 root.Name                   = "Root"
-root.AnchorPoint            = Vector2.new(1, 0.5)
-root.Size                   = UDim2.new(0, PANEL_W + TOGGLE_W, 0, PANEL_H)
-root.Position               = UDim2.new(1, -MARGIN, 0.5, 0)
+root.AnchorPoint            = Vector2.new(1, 0)
+root.Size                   = UDim2.new(0, PANEL_W + TOGGLE_W, 0, 200)
+root.Position               = UDim2.new(1, -MARGIN, 0, TOP)
 root.BackgroundTransparency = 1
 root.Parent                 = screen
-uiScale.Parent              = root -- scales the panel around its right-centre anchor
+uiScale.Parent              = root -- scales the panel around its top-right anchor
 
 local toggleBtn    = flatButton("", root)
 toggleBtn.Size     = UDim2.new(0, TOGGLE_W, 0, TOGGLE_H)
-toggleBtn.Position = UDim2.new(0, 0, 0.5, -TOGGLE_H / 2)
-toggleBtn.BackgroundTransparency = 0.88
+toggleBtn.Position = UDim2.new(0, 0, 0, 12)
+toggleBtn.BackgroundColor3       = C.Glass
+toggleBtn.BackgroundTransparency = UITheme.GLASS_ALPHA
 
-local arrowLabel = text("Arrow", "▶", 9, C.Text, Enum.TextXAlignment.Center, true, toggleBtn)
+local arrowLabel = text("Arrow", "▶", 10, C.GlassMuted, Enum.TextXAlignment.Center, true, toggleBtn)
 
 local badge                  = Instance.new("Frame")
-badge.Size                   = UDim2.new(0, TOGGLE_W, 0, 18)
-badge.Position               = UDim2.new(0, 0, 0.5, -(TOGGLE_H / 2) - 22)
-badge.BackgroundColor3       = C.Danger
-badge.BackgroundTransparency = 0.2
+badge.Size                   = UDim2.new(0, TOGGLE_W, 0, 20)
+badge.Position               = UDim2.new(0, 0, 0, 12 + TOGGLE_H + 6)
+badge.BackgroundColor3       = C.Amber
 badge.BorderSizePixel        = 0
 badge.Visible                = false
 badge.Parent                 = root
-UITheme.Corner(badge)
-local badgeLabel = text("Count", "0", 10, C.Text, Enum.TextXAlignment.Center, true, badge)
+UITheme.Corner(badge, UITheme.Radius.Pill)
+local badgeLabel = text("Count", "0", 11, C.Glass, Enum.TextXAlignment.Center, true, badge)
+badgeLabel.FontFace = FF.MonoB
 
+-- The glass card (6px gap after the toggle tab)
 local panel                  = Instance.new("Frame")
 panel.Name                   = "Panel"
-panel.Size                   = UDim2.new(0, PANEL_W, 1, 0)
-panel.Position               = UDim2.new(0, TOGGLE_W, 0, 0)
-panel.BackgroundTransparency = 1
+panel.Size                   = UDim2.new(0, PANEL_W - 6, 1, 0)
+panel.Position               = UDim2.new(0, TOGGLE_W + 6, 0, 0)
 panel.Parent                 = root
+UITheme.Glass(panel)
 
--- Title
+-- Title: "Parts" and a count pill
 local titleRow                  = Instance.new("Frame")
-titleRow.Size                   = UDim2.new(1, -16, 0, 26)
-titleRow.Position               = UDim2.new(0, 8, 0, 6)
+titleRow.Size                   = UDim2.new(1, -28, 0, 26)
+titleRow.Position               = UDim2.new(0, 14, 0, 10)
 titleRow.BackgroundTransparency = 1
 titleRow.Parent                 = panel
-text("Title", "PARTS INVENTORY", 13, C.Text, nil, true, titleRow)
-divider(panel, 34)
+local titleLabel = text("Title", "Parts", 16, C.GlassText, nil, true, titleRow)
+titleLabel.FontFace = FF.Heavy
+local countPill                  = Instance.new("TextLabel")
+countPill.AnchorPoint            = Vector2.new(1, 0.5)
+countPill.Position               = UDim2.new(1, 0, 0.5, 0)
+countPill.Size                   = UDim2.new(0, 0, 0, 20)
+countPill.AutomaticSize          = Enum.AutomaticSize.X
+countPill.BackgroundColor3       = Color3.new(1, 1, 1)
+countPill.BackgroundTransparency = 0.92
+countPill.FontFace               = FF.Mono
+countPill.TextSize               = 12
+countPill.TextColor3             = C.GlassText
+countPill.Text                   = "0"
+countPill.Parent                 = titleRow
+UITheme.Corner(countPill, UITheme.Radius.Pill)
+UITheme.Pad(countPill, 0, 8)
+divider(panel, 44)
 
 -- Search
 local searchBox                  = Instance.new("TextBox")
 searchBox.Name                   = "SearchBox"
-searchBox.Size                   = UDim2.new(1, -16, 0, 22)
-searchBox.Position               = UDim2.new(0, 8, 0, 40)
+searchBox.Size                   = UDim2.new(1, -(28 + SORT_W + 6), 0, 30)
+searchBox.Position               = UDim2.new(0, 14, 0, 54)
 searchBox.BackgroundColor3       = C.Text
-searchBox.BackgroundTransparency = 0.92
+searchBox.BackgroundTransparency = 0.95
 searchBox.BorderSizePixel        = 0
-searchBox.Font                   = F.Regular
-searchBox.PlaceholderText        = "Search parts or engines..."
-searchBox.PlaceholderColor3      = C.TextMuted
+searchBox.FontFace               = FF.Body
+searchBox.PlaceholderText        = "Search parts"
+searchBox.PlaceholderColor3      = C.GlassFaint
 searchBox.Text                   = ""
-searchBox.TextColor3             = C.Text
-searchBox.TextSize               = 12
+searchBox.TextColor3             = C.GlassText
+searchBox.TextSize               = 13
 searchBox.TextXAlignment         = Enum.TextXAlignment.Left
 searchBox.ClearTextOnFocus       = false
 searchBox.Parent                 = panel
-UITheme.Corner(searchBox)
+UITheme.Corner(searchBox, UDim.new(0, 8))
+UITheme.Stroke(searchBox, Color3.new(1, 1, 1), 1, 0.92)
 local searchPad       = Instance.new("UIPadding")
-searchPad.PaddingLeft = UDim.new(0, 6)
+searchPad.PaddingLeft = UDim.new(0, 10)
 searchPad.Parent      = searchBox
 
--- Sort
+-- Sort, beside the search box
 local sortRow                  = Instance.new("Frame")
-sortRow.Size                   = UDim2.new(1, -16, 0, 20)
-sortRow.Position               = UDim2.new(0, 8, 0, 68)
+sortRow.AnchorPoint            = Vector2.new(1, 0)
+sortRow.Size                   = UDim2.new(0, SORT_W, 0, 30)
+sortRow.Position               = UDim2.new(1, -14, 0, 54)
 sortRow.BackgroundTransparency = 1
 sortRow.ZIndex                 = 5
 sortRow.Parent                 = panel
 
-local sortLabel = text("SortLabel", "SORT:", 11, C.TextMuted, nil, false, sortRow)
-sortLabel.Size  = UDim2.new(0.3, 0, 1, 0)
-
-local sortBtn    = flatButton(SORT_MODES[sortIndex].label .. " ▾", sortRow)
-sortBtn.Size     = UDim2.new(0.7, 0, 1, 0)
-sortBtn.Position = UDim2.new(0.3, 0, 0, 0)
-sortBtn.TextSize = 11
+local SORT_ARROW = "  ▾" -- drawn in Gotham, which has the arrow (Builder Sans doesn't)
+local sortBtn    = flatButton(SORT_MODES[sortIndex].label .. SORT_ARROW, sortRow)
+sortBtn.Size     = UDim2.new(1, 0, 1, 0)
+sortBtn.Font     = Enum.Font.GothamMedium
+sortBtn.TextSize = 12
 
 local dropFrame                  = Instance.new("Frame")
-dropFrame.Size                   = UDim2.new(0.7, 0, 0, #SORT_MODES * 20)
-dropFrame.Position               = UDim2.new(0.3, 0, 1, 2)
-dropFrame.BackgroundColor3       = C.Dark
-dropFrame.BackgroundTransparency = 0.1
+dropFrame.AnchorPoint            = Vector2.new(1, 0)
+dropFrame.Size                   = UDim2.new(0, 130, 0, #SORT_MODES * 26)
+dropFrame.Position               = UDim2.new(1, 0, 1, 4)
+dropFrame.BackgroundColor3       = C.Glass
+dropFrame.BackgroundTransparency = 0.02
 dropFrame.BorderSizePixel        = 0
 dropFrame.Visible                = false
 dropFrame.ZIndex                 = 10
 dropFrame.Parent                 = sortRow
-UITheme.Corner(dropFrame)
+UITheme.Corner(dropFrame, UDim.new(0, 8))
+UITheme.Stroke(dropFrame, Color3.new(1, 1, 1), 1, 0.88)
 
 local dropLayout     = Instance.new("UIListLayout")
 dropLayout.SortOrder = Enum.SortOrder.LayoutOrder
@@ -260,63 +287,68 @@ dropLayout.Parent    = dropFrame
 local dropButtons = {}
 for i, mode in ipairs(SORT_MODES) do
 	local b                  = Instance.new("TextButton")
-	b.Size                   = UDim2.new(1, 0, 0, 20)
+	b.Size                   = UDim2.new(1, 0, 0, 26)
 	b.BackgroundTransparency = 1
-	b.Font                   = F.Regular
+	b.FontFace               = FF.Body
 	b.Text                   = mode.label
-	b.TextColor3             = C.Text
-	b.TextSize               = 11
+	b.TextColor3             = C.GlassText
+	b.TextSize               = 12
 	b.LayoutOrder            = i
 	b.ZIndex                 = 11
 	b.Parent                 = dropFrame
 	dropButtons[i]           = b
 end
 
-divider(panel, 94)
-
--- Column headers
-local colRow                  = Instance.new("Frame")
-colRow.Size                   = UDim2.new(1, -16, 0, 14)
-colRow.Position               = UDim2.new(0, 8, 0, 98)
-colRow.BackgroundTransparency = 1
-colRow.Parent                 = panel
-local hPart = text("HPart", "PART", 10, C.Text, nil, true, colRow)
-hPart.Size  = UDim2.new(0.72, 0, 1, 0)
-local hCond    = text("HCond", "COND.", 10, C.Text, Enum.TextXAlignment.Right, true, colRow)
-hCond.Size     = UDim2.new(0.28, 0, 1, 0)
-hCond.Position = UDim2.new(0.72, 0, 0, 0)
-
-divider(panel, 114)
-
--- Clear (testing tool)
-local clearBtn                  = flatButton("CLEAR INVENTORY", panel)
-clearBtn.Size                   = UDim2.new(1, -16, 0, 18)
-clearBtn.Position               = UDim2.new(0, 8, 0, 118)
-clearBtn.BackgroundColor3       = C.Danger
-clearBtn.BackgroundTransparency = 0.6
-
-divider(panel, 140)
-
 -- List
 local scroll                  = Instance.new("ScrollingFrame")
-scroll.Size                   = UDim2.new(1, -16, 1, -148)
-scroll.Position               = UDim2.new(0, 8, 0, 144)
+scroll.Size                   = UDim2.new(1, -16, 1, -(LIST_TOP + CLEAR_H + 20))
+scroll.Position               = UDim2.new(0, 8, 0, LIST_TOP)
 scroll.BackgroundTransparency = 1
 scroll.BorderSizePixel        = 0
-scroll.ScrollBarThickness     = 2
+scroll.ScrollBarThickness     = 4
 scroll.ScrollBarImageColor3   = C.Text
+scroll.ScrollBarImageTransparency = 0.6
+scroll.VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar -- rows make room for the bar when it shows
 scroll.AutomaticCanvasSize    = Enum.AutomaticSize.Y
 scroll.CanvasSize             = UDim2.new(0, 0, 0, 0)
 scroll.Parent                 = panel
 
 local listLayout     = Instance.new("UIListLayout")
-listLayout.Padding   = UDim.new(0, 2)
+listLayout.Padding   = UDim.new(0, 4)
 listLayout.SortOrder = Enum.SortOrder.LayoutOrder
 listLayout.Parent    = scroll
+local listPad = Instance.new("UIPadding")
+listPad.PaddingTop = UDim.new(0, 2)
+listPad.PaddingLeft = UDim.new(0, 2)
+listPad.PaddingRight = UDim.new(0, 4)
+listPad.Parent = scroll
 
-local emptyLabel       = text("Empty", "No parts removed", 11, C.TextMuted, Enum.TextXAlignment.Center, false, scroll)
-emptyLabel.Size        = UDim2.new(1, 0, 0, 30)
+-- The panel grows with the list, up to PANEL_MAX (or the screen); past that
+-- the list scrolls.
+local function resizePanel()
+	local scale = math.max(uiScale.Scale, 0.01)
+	local content = listLayout.AbsoluteContentSize.Y / scale + 8
+	local screenRoom = camera.ViewportSize.Y / scale - TOP - 140
+	local maxH = math.max(260, math.min(PANEL_MAX, screenRoom))
+	local h = math.clamp(LIST_TOP + content + CLEAR_H + 22, LIST_TOP + 60 + CLEAR_H, maxH)
+	root.Size = UDim2.new(0, PANEL_W + TOGGLE_W, 0, h)
+end
+listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(resizePanel)
+camera:GetPropertyChangedSignal("ViewportSize"):Connect(function() task.defer(resizePanel) end)
+task.defer(resizePanel)
+
+local emptyLabel       = text("Empty", "No parts removed", 12, C.GlassFaint, Enum.TextXAlignment.Center, false, scroll)
+emptyLabel.Size        = UDim2.new(1, 0, 0, 34)
 emptyLabel.LayoutOrder = -1
+
+-- Clear (testing tool), at the bottom
+divider(panel, 0).Position = UDim2.new(0, 0, 1, -(CLEAR_H + 14))
+local clearBtn                  = flatButton("CLEAR INVENTORY (TESTING)", panel)
+clearBtn.Size                   = UDim2.new(1, -28, 0, CLEAR_H - 4)
+clearBtn.Position               = UDim2.new(0, 14, 1, -(CLEAR_H + 4))
+clearBtn.BackgroundTransparency = 1
+clearBtn.TextColor3             = C.GlassMuted
+clearBtn.TextSize               = 11
 
 -- Mouse wheel over the panel scrolls the list instead of zooming the camera.
 panel.MouseEnter:Connect(function()
@@ -340,14 +372,14 @@ local function getStatus(item: Item, bayEngine: Model?): (string?, Color3?)
 		and not bayEngine:FindFirstChild(item.name) then
 		local template = RepairRules.FindTemplate(item.engineName, item.name)
 		if template and PartRules.GetReinstallBlocker(template, bayEngine) == nil then
-			return "FITS HERE", C.Accent
+			return "FITS HERE", C.Done
 		end
 	end
 	if not RepairRules.GetOptions(wear).canRepair and wear < 100 then
-		return "NEEDS REPLACING", C.Warning
+		return "NEEDS REPLACING", C.BadText
 	end
 	if wear >= 100 then
-		return "PERFECT", C.TextMuted
+		return "PERFECT", C.Done
 	end
 	return nil, nil
 end
@@ -358,9 +390,9 @@ end
 local function highlightSelection()
 	for id, row in pairs(rows) do
 		local isSel = id == selectedId
-		row.name.TextColor3 = isSel and C.Accent or C.Text
-		row.name.Font       = isSel and F.Bold or F.Regular
-		row.indicator.BackgroundTransparency = isSel and 0 or 1
+		row.frame.BackgroundColor3       = if isSel then C.Done else C.Text
+		row.frame.BackgroundTransparency = if isSel then 0.9 else 1
+		row.stroke.Transparency          = if isSel then 0.55 else 1
 	end
 end
 
@@ -396,31 +428,43 @@ local function makeRow(itemId: string): Row
 	local frame                  = Instance.new("Frame")
 	frame.Name                   = "Row"
 	frame.Size                   = UDim2.new(1, 0, 0, ROW_H)
+	frame.BackgroundColor3       = C.Text
 	frame.BackgroundTransparency = 1
+	frame.BorderSizePixel        = 0
 	frame.Parent                 = scroll
+	UITheme.Corner(frame, UDim.new(0, 10))
+	local stroke = UITheme.Stroke(frame, C.Done, 1, 1)
 
-	local indicator                  = Instance.new("Frame")
-	indicator.Size                   = UDim2.new(0, 2, 0.7, 0)
-	indicator.Position               = UDim2.new(0, 0, 0.15, 0)
-	indicator.BackgroundColor3       = C.Accent
-	indicator.BackgroundTransparency = 1
-	indicator.BorderSizePixel        = 0
-	indicator.Parent                 = frame
-	UITheme.Corner(indicator, UITheme.Radius.Pill)
+	local name    = text("Name", "", 14, C.GlassText, nil, true, frame)
+	name.Size     = UDim2.new(1, -86, 0, 18)
+	name.Position = UDim2.new(0, 10, 0, 6)
 
-	local name    = text("Name", "", 12, C.Text, nil, false, frame)
-	name.Size     = UDim2.new(0.72, -6, 0, 16)
-	name.Position = UDim2.new(0, 6, 0, 1)
-
-	local detail    = text("Detail", "", 9, C.TextMuted, nil, false, frame)
-	detail.Size     = UDim2.new(0.72, -6, 0, 12)
-	detail.Position = UDim2.new(0, 6, 0, 16)
+	local detail    = text("Detail", "", 11, C.GlassMuted, nil, false, frame)
+	detail.Size     = UDim2.new(1, -86, 0, 14)
+	detail.Position = UDim2.new(0, 10, 0, 25)
 	detail.RichText = true
 
-	local cond    = text("Condition", "", 12, C.Text, Enum.TextXAlignment.Right, true, frame)
-	cond.Size     = UDim2.new(0.28, 0, 1, 0)
-	cond.Position = UDim2.new(0.72, 0, 0, 0)
-	cond.Font     = F.Mono
+	local cond       = text("Condition", "", 14, C.Text, Enum.TextXAlignment.Right, true, frame)
+	cond.Size        = UDim2.new(0, 60, 0, 18)
+	cond.AnchorPoint = Vector2.new(1, 0)
+	cond.Position    = UDim2.new(1, -10, 0, 7)
+	cond.FontFace    = FF.MonoB
+
+	-- Condition bar under the %
+	local track                  = Instance.new("Frame")
+	track.AnchorPoint            = Vector2.new(1, 0)
+	track.Position               = UDim2.new(1, -10, 0, 30)
+	track.Size                   = UDim2.new(0, 54, 0, 4)
+	track.BackgroundColor3       = C.Text
+	track.BackgroundTransparency = 0.92
+	track.BorderSizePixel        = 0
+	track.Parent                 = frame
+	UITheme.Corner(track, UITheme.Radius.Pill)
+	local bar            = Instance.new("Frame")
+	bar.Size             = UDim2.new(0, 0, 1, 0)
+	bar.BorderSizePixel  = 0
+	bar.Parent           = track
+	UITheme.Corner(bar, UITheme.Radius.Pill)
 
 	local button                  = Instance.new("TextButton")
 	button.Size                   = UDim2.new(1, 0, 1, 0)
@@ -432,7 +476,7 @@ local function makeRow(itemId: string): Row
 		setSelected(selectedId ~= itemId and itemId or nil)
 	end)
 
-	return { frame = frame, indicator = indicator, name = name, detail = detail, cond = cond }
+	return { frame = frame, stroke = stroke, name = name, detail = detail, cond = cond, bar = bar }
 end
 
 -- Updates a row's text and colours from its item.
@@ -441,11 +485,13 @@ local function fillRow(row: Row, item: Item, bayEngine: Model?)
 	row.name.Text       = item.name
 	row.cond.Text       = string.format("%d%%", math.floor(wear))
 	row.cond.TextColor3 = WearColors.Gradient(wear)
+	row.bar.Size             = UDim2.new(math.clamp(wear / 100, 0, 1), 0, 1, 0)
+	row.bar.BackgroundColor3 = WearColors.Gradient(wear)
 
 	local status, statusColor = getStatus(item, bayEngine)
-	local engineText = string.upper(item.engineName or "?")
+	local engineText = item.engineName or "?"
 	if status and statusColor then
-		row.detail.Text = string.format('%s  ·  <font color="%s">%s</font>', engineText, UITheme.ToHex(statusColor), status)
+		row.detail.Text = string.format('%s  ·  <b><font color="%s">%s</font></b>', engineText, UITheme.ToHex(statusColor), status)
 	else
 		row.detail.Text = engineText
 	end
@@ -483,6 +529,7 @@ end
 
 local function updateBadge()
 	badgeLabel.Text = tostring(#inventory)
+	countPill.Text  = tostring(#inventory)
 	badge.Visible   = not panelOpen and #inventory > 0
 end
 
@@ -544,7 +591,7 @@ end)
 for i, b in ipairs(dropButtons) do
 	b.MouseButton1Click:Connect(function()
 		sortIndex    = i
-		sortBtn.Text = SORT_MODES[i].label .. " ▾"
+		sortBtn.Text = SORT_MODES[i].label .. SORT_ARROW
 		setDropdown(false)
 		applyFilterAndSort()
 	end)
@@ -565,8 +612,8 @@ local function setPanelOpen(open: boolean)
 	updateBadge()
 	-- Closed: slide right so only the toggle tab stays on screen.
 	TweenService:Create(root, TWEEN_INFO, {
-		Position = open and UDim2.new(1, -MARGIN, 0.5, 0)
-			or UDim2.new(1, PANEL_W * uiScale.Scale, 0.5, 0),
+		Position = open and UDim2.new(1, -MARGIN, 0, TOP)
+			or UDim2.new(1, PANEL_W * uiScale.Scale, 0, TOP),
 	}):Play()
 end
 
@@ -578,8 +625,9 @@ end)
 
 local function resetClearButton()
 	clearArmedAt                    = nil
-	clearBtn.Text                   = "CLEAR INVENTORY"
-	clearBtn.BackgroundTransparency = 0.6
+	clearBtn.Text                   = "CLEAR INVENTORY (TESTING)"
+	clearBtn.BackgroundTransparency = 1
+	clearBtn.TextColor3             = C.GlassMuted
 end
 
 clearBtn.MouseButton1Click:Connect(function()
@@ -594,7 +642,9 @@ clearBtn.MouseButton1Click:Connect(function()
 
 	-- First click: arm it, and disarm automatically if not confirmed in time.
 	clearArmedAt                    = os.clock()
-	clearBtn.BackgroundTransparency = 0.15
+	clearBtn.BackgroundColor3       = C.Bad
+	clearBtn.BackgroundTransparency = 0
+	clearBtn.TextColor3             = C.GlassText
 	local armedAt = clearArmedAt
 	for remaining = CLEAR_CONFIRM_TIME, 1, -1 do
 		if clearArmedAt ~= armedAt then return end

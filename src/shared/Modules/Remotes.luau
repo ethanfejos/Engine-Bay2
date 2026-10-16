@@ -53,12 +53,16 @@ export type Remotes = {
 	PartRemoving     : RemoteEvent, -- server -> client: play the removal effect
 
 	-- NPCs talking to you (BayRentalService's landlord, JobService's customers)
-	NpcSpeech        : RemoteEvent, -- server -> client: (speaker name, text)
+	NpcSpeech        : RemoteEvent, -- server -> client: (speaker name, text, info?) — info: { kind = "tony"|"customer", userId?, mood?, moodLabel?, car? }
 
 	-- Customer jobs (JobService)
 	JobUpdated       : RemoteEvent, -- server -> client: the work order (or nil: no job)
 	CancelJob        : RemoteEvent, -- client -> server
 	JobReceipt       : RemoteEvent, -- server -> client: the receipt for a finished job
+
+	-- Tony and your bay (TonyService, BayRentalService)
+	TonyStatus       : RemoteEvent, -- server -> client: { debt, mood, rent }
+	ReleaseBay       : RemoteEvent, -- client -> server: hand back the keys
 
 	-- Workbench (RepairService)
 	StartRepair      : RemoteEvent, -- client -> server: itemId
@@ -75,6 +79,7 @@ local NAMES = {
 	"MoneyUpdated", "RequestMoney",
 	"RemovePart", "PartRemoving",
 	"NpcSpeech", "JobUpdated", "CancelJob", "JobReceipt",
+	"TonyStatus", "ReleaseBay",
 	"StartRepair", "CancelRepair", "ReplacePart", "RepairProgress", "RepairComplete", "RepairRefused",
 }
 

@@ -9,9 +9,8 @@
     Reads the "Reputation" number attribute on each Player, 0–5. Decimals
     fill a star partly (3.4 = three full stars and 40% of the fourth), so
     reputation can creep up gradually. No attribute (or not a number) = 0,
-    all five empty. The server will own this value (a ReputationService,
-    not built yet); to try it now, select your Player under Players while
-    testing and add a number attribute "Reputation".
+    all five empty. ReputationService (server) owns the value: it sets the
+    attribute from the save when you join and every time it changes.
 
     Your own stars hide while the camera is scripted (engine view and the
     workbench), since your character is hidden then too.

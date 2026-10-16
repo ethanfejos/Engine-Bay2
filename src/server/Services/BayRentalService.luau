@@ -2,19 +2,29 @@
 --[[
     BayRentalService (ModuleScript, started by Main)
     ------------------------------------------------
-    Renting a bay from the landlord, Tony. Phase 1 (basics):
+    Renting a bay from the landlord, Tony:
 
-    - Tony stands in the garage with a "Rent a bay" prompt. Renting costs
-      RENT (MoneyService.TEST_FLAT_COST, $1, while testing), paid up front.
-    - You get the first free Mechanic bay to yourself for this session (a
-      "shift"): it's marked with your UserId ("RentedBy" on the bay part,
-      which the client uses for the YOUR BAY marker). Customers' cars come
-      to it (JobService.BayRented). (With SPAWN_OWN_CAR on, your own car spawns into it instead —
-      off until the junkyard gives players cars of their own.)
-    - One bay per player. If every bay is taken, or you can't afford it,
-      Tony says so and nothing is charged.
-    - Leaving the game ends the shift: the bay goes back to Tony (and your
-      car is saved and removed by CarService). No refunds.
+    - Tony stands in the garage with a "Rent a bay" prompt, and his mood
+      (TonyService) floats over his head.
+    - Rent is per minute (TonyService.RentPerMinute: $3 in a normal mood,
+      $1 while testing; his mood moves it). The first minute is paid up
+      front, then one minute every RENT_PERIOD seconds for as long as you
+      keep the bay. Whatever you can't pay goes on your debt to Tony — he
+      always rents you a bay, so you can work a debt off.
+    - You get the first free Mechanic bay to yourself: it's marked with your
+      UserId ("RentedBy" on the bay part, which the client uses for the YOUR
+      BAY marker). Customers' cars come to it (JobService.BayRented). (With
+      SPAWN_OWN_CAR on, your own car spawns into it instead — off until the
+      junkyard gives players cars of their own.)
+    - One bay per player. If every bay is taken, Tony says so.
+    - Hand back the keys (ReleaseBay, client -> server): the bay goes back
+      and the charges stop. A job in progress counts as cancelled.
+    - Doing nothing for IDLE_KICK seconds (not moving, no part out or in,
+      no job started or finished — JobService.IdleSeconds): Tony kicks you
+      out, same as handing back the keys.
+    - Leaving the game also ends it: the bay goes back to Tony (your job and
+      its car are saved for next time, by JobService and CarService), and
+      nothing is charged while you're away.
 
     Tony's lines reach the player through NpcSpeech (server -> client),
     shown by BayRentalUI.
@@ -36,42 +46,78 @@ local Remotes        = require(Modules:WaitForChild("Remotes"))
 local Log            = require(Modules:WaitForChild("Log"))
 local ProfileManager = require(script.Parent.Parent.Modules.ProfileManager)
 local Npc            = require(script.Parent.Parent.Modules.Npc)
-local MoneyService   = require(script.Parent.MoneyService)
 local CarService     = require(script.Parent.CarService)
+local TonyService    = require(script.Parent.TonyService)
 local JobService     = require(script.Parent.JobService)
 
 local log = Log.new("BayRentalService")
 
 -- ── Config ────────────────────────────────────────────────────────────────────
 
-local LANDLORD_NAME  = "Tony"
-local RENT           = MoneyService.TEST_FLAT_COST -- per shift; $1 while testing
+local LANDLORD_NAME  = TonyService.NAME
+local RENT_PERIOD    = 60      -- seconds per rent charge
+local IDLE_KICK      = 5 * 60  -- seconds of doing nothing before Tony kicks you out
 local BAY_ZONE_TYPE  = "Mechanic"
 local PROMPT_REACH   = 10
 local SPAWN_OWN_CAR  = false -- spawn the player's own (starter) car on renting; back on with the junkyard
 
--- Tony's lines. Greedy, short.
+-- Tony's lines that don't change with his mood (the rest are in TonyService).
 local LINES = {
-	rented       = "Bay %s is yours. $%d, paid up front. Scratch anything and you're paying for it.",
-	rentedNoCar  = "Bay %s is yours. $%d, paid up front. Wait there, customers'll turn up.",
 	alreadyHave  = "You've already got a bay, kid. One's plenty.",
 	full         = "Full up. Come back when someone clears out.",
-	broke        = "Rent's $%d. Up front. No money, no bay.",
 	notLoaded    = "Hang on, still finding your paperwork. Try again in a sec.",
 	noCar        = "Bay's yours, but your car's not turned up. Talk to me again later.",
+	keysBack     = "Keys back. Pleasure doing business.",
+	kickedOut    = "You're not working, you're loitering. Out.",
 }
 
 local BayRentalService = {}
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 
--- [player] = the bay they rent
-local rentals: { [Player]: BasePart } = {}
+type Rental = {
+	bay: BasePart,
+	nextCharge: number,   -- workspace:GetServerTimeNow() time
+	lastPos: Vector3?,    -- where the character was at the last check
+	movedAt: number,      -- os.clock() when they last moved
+	short: boolean,       -- the last charge didn't get paid in full
+}
+local rentals: { [Player]: Rental } = {}
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
 local function say(player: Player, text: string)
-	Remotes.NpcSpeech:FireClient(player, LANDLORD_NAME, text)
+	TonyService.Say(player, text)
+end
+
+-- What players call a bay: its "DisplayName" attribute if you've set one,
+-- else the number at the end of the part's name ("Mechanic_1" -> "1").
+local function bayLabel(bay: BasePart): string
+	local custom = bay:GetAttribute("DisplayName")
+	if type(custom) == "string" and custom ~= "" then return custom end
+	return string.match(bay.Name, "(%d+)$") or bay.Name
+end
+
+local function now(): number
+	return Workspace:GetServerTimeNow()
+end
+
+-- Tells the player's rent panel the bay, the rate and the next charge.
+local function pushRent(player: Player)
+	local rental = rentals[player]
+	TonyService.SetRentInfo(player, if rental then {
+		bay = bayLabel(rental.bay),
+		perMinute = TonyService.RentPerMinute(),
+		nextCharge = rental.nextCharge,
+	} else nil)
+end
+
+-- One minute of rent. Returns what went on the debt (0 if fully paid).
+local function chargeRent(player: Player): number
+	local amount = TonyService.RentPerMinute()
+	TonyService.NoteRent(player, amount)
+	local _, owed = TonyService.Charge(player, amount, "bay rent")
+	return owed
 end
 
 -- The first Mechanic bay nobody rents, with no car in it.
@@ -93,13 +139,26 @@ local function findFreeBay(): BasePart?
 end
 
 local function release(player: Player)
-	local bay = rentals[player]
-	if not bay then return end
+	local rental = rentals[player]
+	if not rental then return end
 	rentals[player] = nil
+	local bay = rental.bay
 	if ZoneUtils.GetRenter(bay) == player.UserId then
 		bay:SetAttribute(ZoneUtils.RENTED_BY_ATTRIBUTE, nil)
 	end
+	if player:IsDescendantOf(Players) then
+		pushRent(player)
+	end
 	log.debug(player.Name, "gave back", bay.Name)
+end
+
+-- The player loses the bay while still in the game (keys handed back, or
+-- kicked out): a job in progress is cancelled, then the bay goes back.
+local function giveUp(player: Player, line: string)
+	if not rentals[player] then return end
+	JobService.BayReleased(player)
+	release(player)
+	say(player, line)
 end
 
 -- ── Renting ───────────────────────────────────────────────────────────────────
@@ -116,34 +175,101 @@ local function rent(player: Player)
 	if not bay then
 		return say(player, LINES.full)
 	end
-	-- Take the bay before paying, so two players can't get the same one.
 	bay:SetAttribute(ZoneUtils.RENTED_BY_ATTRIBUTE, player.UserId)
-	rentals[player] = bay
+	rentals[player] = { bay = bay, nextCharge = now() + RENT_PERIOD, lastPos = nil, movedAt = os.clock(), short = false }
 
-	if not MoneyService.TrySpend(player, RENT, "bay rent") then
-		release(player)
-		return say(player, LINES.broke:format(RENT))
-	end
+	-- The first minute, up front. Can't cover it? Tony still rents the bay —
+	-- it goes on your tab.
+	local owed = chargeRent(player)
+	local rental = rentals[player]
+	if rental then rental.short = owed > 0 end
+	pushRent(player)
+	say(player, if owed > 0
+		then TonyService.Line("tab")
+		else TonyService.Line("rented", bayLabel(bay), TonyService.RentPerMinute()))
 
 	if not SPAWN_OWN_CAR then
-		say(player, LINES.rentedNoCar:format(bay.Name, RENT))
 		JobService.BayRented(player, bay) -- a saved job comes back, or the first customer turns up
-	elseif CarService.SpawnActiveCar(player, bay) then
-		say(player, LINES.rented:format(bay.Name, RENT))
-	else
+	elseif not CarService.SpawnActiveCar(player, bay) then
 		say(player, LINES.noCar)
 	end
 	log.debug(player.Name, "rented", bay.Name)
 end
 
+-- ── Every second: rent due, idle renters ──────────────────────────────────────
+
+task.spawn(function()
+	while true do
+		task.wait(1)
+		for player, rental in pairs(rentals) do
+			if not player:IsDescendantOf(Players) then continue end
+			-- Walking about counts as not idle (e.g. at the workbench).
+			local char = player.Character
+			local root = char and char:FindFirstChild("HumanoidRootPart")
+			if root and root:IsA("BasePart") then
+				local last = rental.lastPos
+				if not last or (root.Position - last).Magnitude > 2 then
+					rental.lastPos = root.Position
+					rental.movedAt = os.clock()
+				end
+			end
+			local idle = math.min(JobService.IdleSeconds(player), os.clock() - rental.movedAt)
+			if idle >= IDLE_KICK then
+				giveUp(player, LINES.kickedOut)
+				continue
+			end
+			if now() >= rental.nextCharge then
+				rental.nextCharge += RENT_PERIOD
+				local owed = chargeRent(player)
+				-- Tony mentions it when you first run short, not every minute.
+				if owed > 0 and not rental.short then
+					say(player, TonyService.Line("tab"))
+				end
+				rental.short = owed > 0
+				pushRent(player)
+			end
+		end
+	end
+end)
+
 -- ── Public ────────────────────────────────────────────────────────────────────
 
 -- The bay this player rents, or nil.
 function BayRentalService.GetBay(player: Player): BasePart?
-	return rentals[player]
+	local rental = rentals[player]
+	return if rental then rental.bay else nil
 end
 
 -- ── Tony ──────────────────────────────────────────────────────────────────────
+
+-- "Rent a bay ($3/min) · Tony's grumpy"
+local function promptText(): string
+	local mood = TonyService.GetMood()
+	return ("Rent a bay ($%d/min) · %s"):format(TonyService.RentPerMinute(),
+		if mood.id == "normal" then "Tony's all business" else "Tony's having a " .. mood.label)
+end
+
+-- A face over Tony's head showing his mood.
+local function addMoodFace(landlord: Model): TextLabel?
+	local head = landlord:FindFirstChild("Head")
+	local adornee = if head and head:IsA("BasePart") then head else landlord.PrimaryPart
+	if not adornee then return nil end
+	local gui                 = Instance.new("BillboardGui")
+	gui.Name                  = "TonyMood"
+	gui.Adornee               = adornee
+	gui.Size                  = UDim2.new(0, 48, 0, 48)
+	gui.StudsOffset           = Vector3.new(0, 3.2, 0)
+	gui.MaxDistance           = 80
+	gui.LightInfluence        = 0
+	gui.Parent                = adornee
+	local face                  = Instance.new("TextLabel")
+	face.Size                   = UDim2.fromScale(1, 1)
+	face.BackgroundTransparency = 1
+	face.TextScaled             = true
+	face.Text                   = TonyService.GetMood().face
+	face.Parent                 = gui
+	return face
+end
 
 local function addPrompt(landlord: Model)
 	local root = landlord:FindFirstChild("HumanoidRootPart") or landlord.PrimaryPart
@@ -152,13 +278,23 @@ local function addPrompt(landlord: Model)
 		return
 	end
 	local prompt                 = Instance.new("ProximityPrompt")
-	prompt.ActionText            = ("Rent a bay ($%d)"):format(RENT)
+	prompt.ActionText            = promptText()
 	prompt.ObjectText            = LANDLORD_NAME .. " · Landlord"
+	prompt.Style                 = Enum.ProximityPromptStyle.Custom
+	prompt:SetAttribute("Tone", "money") -- amber key (CustomPromptManager)
 	prompt.HoldDuration          = 0
 	prompt.MaxActivationDistance = PROMPT_REACH
 	prompt.RequiresLineOfSight   = false
 	prompt.Parent                = root
 	prompt.Triggered:Connect(rent)
+
+	local face = addMoodFace(landlord)
+	TonyService.MoodChanged:Connect(function(mood)
+		prompt.ActionText = promptText()
+		if face then face.Text = mood.face end
+		-- Everyone renting sees the new rate on their panel.
+		for player in pairs(rentals) do pushRent(player) end
+	end)
 end
 
 -- A default-looking placeholder Tony standing on top of `spot`, facing its front.
@@ -184,8 +320,12 @@ end)
 
 -- ── Leaving ───────────────────────────────────────────────────────────────────
 
--- The shift ends: the bay goes back to Tony. (CarService saves and removes
--- the car in its own OnBeforeRelease.)
+Remotes.ReleaseBay.OnServerEvent:Connect(function(player)
+	giveUp(player, LINES.keysBack)
+end)
+
+-- Leaving ends the shift: the bay goes back to Tony. (The job and its car
+-- are saved by JobService and CarService in their OnBeforeRelease.)
 Players.PlayerRemoving:Connect(release)
 
 return BayRentalService

@@ -10,24 +10,28 @@
        bay wearing one of the player's Roblox friends' avatars, with that
        friend's name (a stand-in customer if there are no friends to use).
        Where they stand: a "CustomerSpot" part inside the bay part if there
-       is one, otherwise the clear side of the bay nearest the player.
+       is one, otherwise beside the car on the clear side nearest the player.
     2. The work order: 1–2 named faults. The car is built so those parts
        are badly worn (FAULT_WEAR) and everything else is healthy.
     3. The player fixes them with the existing tools: remove, repair or
        replace at the bench, reinstall. Progress is re-checked every time a
        part comes out or goes back in (CarService.CarChanged).
     4. Hand back: talk to the customer. Accepted only when every fault is at
-       FIXED_WEAR or better and no part is missing. Pays PAY_PER_FAULT per
-       fault plus XP; the car and customer leave; the next customer turns
-       up after NEXT_CUSTOMER_DELAY.
+       FIXED_WEAR or better and no part is missing. The customer pays
+       PAY_PER_FAULT per fault plus a tip; Tony settles it (TonyService:
+       his cut, maybe the tip, interest and debt repayment) and you get the
+       rest, XP and reputation (more for a quick job); the car and customer
+       leave; the next customer turns up after NEXT_CUSTOMER_DELAY.
 
     Saved: the job, with the customer's car as it is right now, lives in
     profile.Data.activeJob. Leaving mid-job saves it; renting a bay again
     brings the same customer and car back.
 
     Cancel (CancelJob, client -> server): the car goes home with all its
-    parts — any on the floor or in the inventory are taken back — and the
-    next customer comes.
+    parts — any on the floor or in the inventory are taken back — Tony
+    fines you (TonyService.CancelFine), you lose reputation, and the next
+    customer comes. Losing the bay mid-job (handing back the keys, or Tony
+    kicking you out for doing nothing) counts as a cancel too (BayReleased).
 
     Remotes: JobUpdated (server -> client) sends the work order to the
     JobUI (or nil when there's no job); JobReceipt sends the receipt shown
@@ -46,10 +50,11 @@ local ProfileManager    = require(script.Parent.Parent.Modules.ProfileManager)
 local SaveData          = require(script.Parent.Parent.Modules.SaveData)
 local Npc               = require(script.Parent.Parent.Modules.Npc)
 local CarService        = require(script.Parent.CarService)
-local MoneyService      = require(script.Parent.MoneyService)
 local LevelService      = require(script.Parent.LevelService)
 local InventoryService  = require(script.Parent.InventoryService)
 local PartPickupService = require(script.Parent.PartPickupService)
+local ReputationService = require(script.Parent.ReputationService)
+local TonyService       = require(script.Parent.TonyService)
 
 local log = Log.new("JobService")
 
@@ -67,6 +72,9 @@ local FIRST_CUSTOMER_DELAY = 3           -- seconds after renting
 local NEXT_CUSTOMER_DELAY  = 6           -- seconds after a job ends
 local CUSTOMER_GAP         = 3           -- studs between the bay's edge and the customer (when no CustomerSpot)
 local PROMPT_REACH         = 10
+local TIP_PERCENT          = { 5, 20 }   -- the customer's tip, % of the pay (customer types change this in phase 3)
+local QUICK_JOB_SECONDS    = 5 * 60      -- handed back within this: a quick job (more reputation)
+local TONY_LINE_DELAY      = 2.5         -- seconds between the customer's line and Tony butting in
 
 -- Stand-in customers when there are no friends to use.
 local FALLBACK_NAMES = { "Dave", "Mere", "Tama", "Sharon", "Wiremu", "Kev", "Aroha", "Brent" }
@@ -85,6 +93,7 @@ local LINES = {
 	notDone   = "Not done yet, mate. Still waiting on: %s.",
 	thanks    = "Legend, cheers! Here's your $%d.",
 	cancelled = "No worries, I'll take it somewhere else.",
+	lostBay   = "Where's my car going?! Forget it, I'm off.",
 	notYours  = "Sorry, I'm waiting on someone else.",
 }
 
@@ -97,11 +106,14 @@ type Active = {
 	bay: BasePart,
 	car: Model,
 	customer: Model?,
+	startedAt: number,     -- os.clock() when the car arrived (this session)
+	startedServer: number, -- workspace:GetServerTimeNow() at the same moment (the work order's timer)
 }
 
 local active: { [Player]: Active } = {}      -- the job each player is working on
 local bays: { [Player]: BasePart } = {}      -- each player's rented bay
 local nextToken: { [Player]: number } = {}   -- so only the latest "next customer" timer counts
+local lastWork: { [Player]: number } = {}    -- os.clock() of the player's last work (for Tony's idle check)
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -116,7 +128,19 @@ local function partLabel(path: string): string
 end
 
 local function say(player: Player, job: JobRecord, text: string)
-	Remotes.NpcSpeech:FireClient(player, job.customerName, text)
+	Remotes.NpcSpeech:FireClient(player, job.customerName, text,
+		{ kind = "customer", userId = job.customerUserId, car = job.car.model })
+end
+
+-- Tony butts in a moment after the customer has spoken.
+local function tonyLater(player: Player, delay: number, text: string)
+	task.delay(delay, function()
+		if player:IsDescendantOf(Players) then TonyService.Say(player, text) end
+	end)
+end
+
+local function worked(player: Player)
+	lastWork[player] = os.clock()
 end
 
 local function isFixed(job: JobRecord, path: string): boolean
@@ -165,19 +189,27 @@ local function sendUpdate(player: Player)
 	Remotes.JobUpdated:FireClient(player, {
 		customerName   = a.job.customerName,
 		customerUserId = a.job.customerUserId,
+		car            = a.job.car.model,
 		request        = a.job.request,
 		pay            = a.job.pay,
 		tasks          = tasks,
 		complete       = complete,
+		startedAt      = a.startedServer,
+		quickSeconds   = QUICK_JOB_SECONDS,
+		-- What cancelling would cost right now (shown before you confirm).
+		cancelFine     = math.max(1, math.floor(a.job.pay * TonyService.GetMood().cancelFine + 0.5)),
+		cancelStars    = -ReputationService.CHANGES.cancelled,
 	})
 end
 
 -- Where the customer stands, facing the bay:
 -- 1. a Part named "CustomerSpot" inside the bay part, if you've placed one
 --    (they stand on top of it) — exact control for any bay;
--- 2. otherwise the best of the bay's four sides: one with real floor under
---    it and nothing solid in the way, closest to the player (who's inside
---    the garage, so the customer doesn't end up behind the building).
+-- 2. otherwise beside the car: one of the bay's two LONG sides (the car lies
+--    along the bay, so that's next to its doors, not at its nose or tail),
+--    with real floor under it and nothing solid in the way, the one closest
+--    to the player (who's inside the garage). Only if both long sides are
+--    blocked does it use an end of the bay.
 local function customerSpot(bay: BasePart, player: Player): CFrame
 	local function facingBay(ground: Vector3): CFrame
 		return CFrame.lookAt(ground, Vector3.new(bay.Position.X, ground.Y, bay.Position.Z))
@@ -211,46 +243,60 @@ local function customerSpot(bay: BasePart, player: Player): CFrame
 		return if f.Magnitude > 0.01 then f.Unit else Vector3.zero
 	end
 	local right, forward = flat(bay.CFrame.RightVector), flat(bay.CFrame.LookVector)
-	local sides = {
+	local acrossX = {
 		right * (bay.Size.X / 2 + CUSTOMER_GAP),
 		-right * (bay.Size.X / 2 + CUSTOMER_GAP),
+	}
+	local acrossZ = {
 		forward * (bay.Size.Z / 2 + CUSTOMER_GAP),
 		-forward * (bay.Size.Z / 2 + CUSTOMER_GAP),
 	}
+	-- Beside the car = across the bay's narrow direction.
+	local besideSides, endSides = acrossX, acrossZ
+	if bay.Size.Z < bay.Size.X then
+		besideSides, endSides = acrossZ, acrossX
+	end
 
 	local char = player.Character
 	local hrp = char and char:FindFirstChild("HumanoidRootPart")
 	local playerPos = if hrp and hrp:IsA("BasePart") then hrp.Position else nil
 
-	local best: Vector3? = nil
-	local bestDist = math.huge
 	local fallback: Vector3? = nil
-	for _, offset in ipairs(sides) do
-		local pos = bay.Position + offset
-		local top = pos + Vector3.new(0, bay.Size.Y / 2, 0)
-		local hit = Workspace:Raycast(top, Vector3.new(0, -(bay.Size.Y + 50), 0), rayParams)
-		if hit then
-			local ground = hit.Position
-			fallback = fallback or ground
-			-- Room to stand: nothing solid in a person-sized box on the spot.
-			local clear = #Workspace:GetPartBoundsInBox(
-				CFrame.new(ground + Vector3.new(0, 3, 0)), Vector3.new(2, 5, 2), boxParams) == 0
-			if clear then
-				local dist = if playerPos then (ground - playerPos).Magnitude else 0
-				if dist < bestDist then
-					best, bestDist = ground, dist
+
+	-- The clear spot among `offsets` closest to the player, or nil.
+	local function bestOf(offsets: { Vector3 }): Vector3?
+		local best: Vector3? = nil
+		local bestDist = math.huge
+		for _, offset in ipairs(offsets) do
+			local pos = bay.Position + offset
+			local top = pos + Vector3.new(0, bay.Size.Y / 2, 0)
+			local hit = Workspace:Raycast(top, Vector3.new(0, -(bay.Size.Y + 50), 0), rayParams)
+			if hit then
+				local ground = hit.Position
+				fallback = fallback or ground
+				-- Room to stand: nothing solid in a person-sized box on the spot.
+				local clear = #Workspace:GetPartBoundsInBox(
+					CFrame.new(ground + Vector3.new(0, 3, 0)), Vector3.new(2, 5, 2), boxParams) == 0
+				if clear then
+					local dist = if playerPos then (ground - playerPos).Magnitude else 0
+					if dist < bestDist then
+						best, bestDist = ground, dist
+					end
 				end
 			end
 		end
+		return best
 	end
 
-	local ground = best or fallback or (bay.Position + sides[1] - Vector3.new(0, bay.Size.Y / 2, 0))
+	local ground = bestOf(besideSides) or bestOf(endSides) or fallback
+		or (bay.Position + besideSides[1] - Vector3.new(0, bay.Size.Y / 2, 0))
 	return facingBay(ground)
 end
 
 -- ── Jobs ──────────────────────────────────────────────────────────────────────
 
 local scheduleNext -- defined below
+local cancelJob: (Player, Active, string) -> () -- defined below
 
 local function endJob(player: Player, a: Active)
 	if active[player] ~= a then return end
@@ -282,17 +328,29 @@ local function handBack(player: Player, triggering: Player, a: Active)
 		return
 	end
 
-	-- What the player is paid. Tony's cut and tips arrive with bay rental
-	-- phase 2; until then they're 0 and the receipt leaves those lines out.
-	local subtotal = a.job.pay
-	local tonyCut  = 0
-	local tip      = 0
-	local total    = subtotal - tonyCut + tip
+	-- The customer pays; Tony takes his share (TonyService.SettleJob pays
+	-- the player the rest).
+	local tip = math.floor(a.job.pay * math.random(TIP_PERCENT[1], TIP_PERCENT[2]) / 100 + 0.5)
+	local rent = TonyService.TakeRentTally(player)
+	local s = TonyService.SettleJob(player, a.job.pay, tip)
 
-	MoneyService.AddMoney(player, total, "job for " .. a.job.customerName)
 	LevelService.AddXP(player, LevelService.XP_AWARDS.job, "job")
+	local quick = os.clock() - a.startedAt <= QUICK_JOB_SECONDS
+	ReputationService.Add(player,
+		if quick then ReputationService.CHANGES.quickJob else ReputationService.CHANGES.slowJob,
+		if quick then "quick job" else "slow job")
 	InventoryService.RemovePartsFromCar(player, a.job.car.id) -- normally none left
-	say(player, a.job, LINES.thanks:format(total))
+	worked(player)
+
+	say(player, a.job, LINES.thanks:format(a.job.pay + tip))
+	local delay = TONY_LINE_DELAY
+	if s.tipStolen then
+		tonyLater(player, delay, TonyService.Line("stoleTip"))
+		delay += TONY_LINE_DELAY
+	end
+	if s.debtAfter > 0 then
+		tonyLater(player, delay, TonyService.Line("debt", s.debtAfter))
+	end
 
 	-- The receipt (ReceiptUI): one line per fault, then the totals.
 	local lines = {}
@@ -306,13 +364,21 @@ local function handBack(player: Player, triggering: Player, a: Active)
 		car          = a.job.car.model,
 		mechanic     = player.DisplayName,
 		lines        = lines,
-		subtotal     = subtotal,
-		tonyCut      = tonyCut,
-		tip          = tip,
-		total        = total,
+		subtotal     = s.pay,
+		tonyCut      = s.cut,
+		cutPercent   = s.cutPercent,
+		mood         = s.moodLabel,
+		tip          = s.tip,
+		tipStolen    = s.tipStolen,
+		rentMinutes  = rent.minutes,
+		rentAmount   = rent.amount,
+		interest     = s.interest,
+		repayment    = s.repayment,
+		debtAfter    = s.debtAfter,
+		total        = s.total,
 		xp           = LevelService.XP_AWARDS.job,
 	})
-	log.debug(player.Name, "finished a job for", a.job.customerName, "$" .. a.job.pay)
+	log.debug(player.Name, "finished a job for", a.job.customerName, "$" .. a.job.pay, "took home $" .. s.total)
 	endJob(player, a)
 end
 
@@ -323,8 +389,13 @@ local function spawnJob(player: Player, bay: BasePart, job: JobRecord): boolean
 		log.warn("Couldn't spawn the job car for", player.Name)
 		return false
 	end
-	local a: Active = { job = job, bay = bay, car = car, customer = nil }
+	local a: Active = {
+		job = job, bay = bay, car = car, customer = nil,
+		startedAt = os.clock(), startedServer = Workspace:GetServerTimeNow(),
+	}
 	active[player] = a
+	TonyService.TakeRentTally(player) -- the receipt's rent line counts from now
+	worked(player)
 	sendUpdate(player)
 	say(player, job, job.request)
 
@@ -343,6 +414,8 @@ local function spawnJob(player: Player, bay: BasePart, job: JobRecord): boolean
 			local prompt                 = Instance.new("ProximityPrompt")
 			prompt.ActionText            = "Hand back car"
 			prompt.ObjectText            = job.customerName
+			prompt.Style                 = Enum.ProximityPromptStyle.Custom
+			prompt:SetAttribute("Tone", "done") -- green key (CustomPromptManager)
 			prompt.HoldDuration          = 0
 			prompt.MaxActivationDistance = PROMPT_REACH
 			prompt.RequiresLineOfSight   = false
@@ -441,6 +514,7 @@ end
 -- saved job, or sends the first customer.
 function JobService.BayRented(player: Player, bay: BasePart)
 	bays[player] = bay
+	worked(player)
 	local profile = ProfileManager.GetProfile(player)
 	local saved = profile and profile.Data.activeJob
 	if saved then
@@ -453,27 +527,54 @@ function JobService.BayRented(player: Player, bay: BasePart)
 	end
 end
 
+-- Seconds since the player last did any work: a part out or in, a job
+-- started or finished. (BayRentalService kicks idle renters out.)
+function JobService.IdleSeconds(player: Player): number
+	local last = lastWork[player]
+	return if last then os.clock() - last else 0
+end
+
+-- Called by BayRentalService when `player` loses their bay while still in
+-- the game (handed back the keys, or kicked out): a job in progress counts
+-- as cancelled, and no more customers come.
+function JobService.BayReleased(player: Player)
+	bays[player] = nil
+	nextToken[player] = nil
+	lastWork[player] = nil
+	local a = active[player]
+	if a then cancelJob(player, a, LINES.lostBay) end
+end
+
 -- ── Events ────────────────────────────────────────────────────────────────────
 
 -- A part came out or went back in: re-check that player's work order.
 CarService.CarChanged:Connect(function(carId: string)
 	for player, a in pairs(active) do
 		if a.job.car.id == carId then
+			worked(player)
 			sendUpdate(player)
 			return
 		end
 	end
 end)
 
-Remotes.CancelJob.OnServerEvent:Connect(function(player)
-	local a = active[player]
-	if not a then return end
-	-- The car goes home with all its parts.
+-- The job ends without the work done: the car goes home with all its
+-- parts, Tony fines you, and you lose reputation.
+cancelJob = function(player: Player, a: Active, customerLine: string)
+	if active[player] ~= a then return end
 	PartPickupService.CollectAllFor(player)
 	InventoryService.RemovePartsFromCar(player, a.job.car.id)
-	say(player, a.job, LINES.cancelled)
-	log.debug(player.Name, "cancelled the job for", a.job.customerName)
+	say(player, a.job, customerLine)
+	local fine = TonyService.CancelFine(player, a.job.pay)
+	ReputationService.Add(player, ReputationService.CHANGES.cancelled, "cancelled job")
+	tonyLater(player, TONY_LINE_DELAY, TonyService.Line("fine", fine))
+	log.debug(player.Name, "cancelled the job for", a.job.customerName, "fined $" .. fine)
 	endJob(player, a)
+end
+
+Remotes.CancelJob.OnServerEvent:Connect(function(player)
+	local a = active[player]
+	if a then cancelJob(player, a, LINES.cancelled) end
 end)
 
 -- Leaving: the job stays saved (CarService saves and removes the car into
@@ -484,6 +585,7 @@ ProfileManager.OnBeforeRelease(function(player)
 	active[player] = nil
 	bays[player] = nil
 	nextToken[player] = nil
+	lastWork[player] = nil
 end)
 
 return JobService

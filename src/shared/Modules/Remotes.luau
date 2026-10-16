@@ -42,7 +42,7 @@ export type Remotes = {
 	RequestXp        : RemoteEvent, -- client -> server
 	InspectStart     : RemoteEvent, -- client -> server
 	PartInspected    : RemoteEvent, -- both ways
-	InspectedSync    : RemoteEvent, -- server -> client: saved inspected keys
+	InspectedSync    : RemoteEvent, -- server -> client: a spawned car's inspected keys (CarService)
 
 	-- Money (MoneyService)
 	MoneyUpdated     : RemoteEvent, -- server -> client
@@ -51,6 +51,14 @@ export type Remotes = {
 	-- Removing parts (EngineServer)
 	RemovePart       : RemoteEvent, -- client -> server
 	PartRemoving     : RemoteEvent, -- server -> client: play the removal effect
+
+	-- NPCs talking to you (BayRentalService's landlord, JobService's customers)
+	NpcSpeech        : RemoteEvent, -- server -> client: (speaker name, text)
+
+	-- Customer jobs (JobService)
+	JobUpdated       : RemoteEvent, -- server -> client: the work order (or nil: no job)
+	CancelJob        : RemoteEvent, -- client -> server
+	JobReceipt       : RemoteEvent, -- server -> client: the receipt for a finished job
 
 	-- Workbench (RepairService)
 	StartRepair      : RemoteEvent, -- client -> server: itemId
@@ -66,6 +74,7 @@ local NAMES = {
 	"XpUpdated", "LeveledUp", "RequestXp", "InspectStart", "PartInspected", "InspectedSync",
 	"MoneyUpdated", "RequestMoney",
 	"RemovePart", "PartRemoving",
+	"NpcSpeech", "JobUpdated", "CancelJob", "JobReceipt",
 	"StartRepair", "CancelRepair", "ReplacePart", "RepairProgress", "RepairComplete", "RepairRefused",
 }
 

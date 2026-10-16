@@ -28,6 +28,10 @@ UITheme.Colors = {
 	Track     = Color3.fromRGB(40, 40, 40),    -- empty part of every bar
 	Disabled  = Color3.fromRGB(70, 70, 70),    -- greyed-out buttons
 	Dark      = Color3.fromRGB(20, 20, 20),    -- menus, text on light tiles
+
+	Paper     = Color3.fromRGB(250, 250, 246), -- receipts
+	Ink       = Color3.fromRGB(25, 25, 25),    -- text on paper
+	InkMuted  = Color3.fromRGB(120, 120, 120), -- labels and dashes on paper
 }
 
 UITheme.Fonts = {

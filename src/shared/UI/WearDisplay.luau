@@ -39,6 +39,7 @@ end
 
 function WearDisplay.Start(model: Model, labels: GUIBuilder.Labels, part: BasePart): RBXScriptConnection
 	local pulseTime = 0
+	local shownWear: number? = nil -- the wear the bar colour was last tweened to
 
 	local conn = RunService.RenderStepped:Connect(function(delta: number)
 		if not labels or not model or not model.Parent then return end
@@ -50,11 +51,15 @@ function WearDisplay.Start(model: Model, labels: GUIBuilder.Labels, part: BasePa
 		labels.wear.Text       = string.format("WEAR  %d%%", math.floor(wear))
 		labels.wear.TextColor3 = color
 
-		-- Update bar fill color smoothly
-		TweenService:Create(labels.barFill,
-			TweenInfo.new(0.3),
-			{ BackgroundColor3 = color }
-		):Play()
+		-- Recolour the bar smoothly, but only when the wear actually changes
+		-- (this runs every frame; a new tween every frame was wasted work).
+		if wear ~= shownWear then
+			shownWear = wear
+			TweenService:Create(labels.barFill,
+				TweenInfo.new(0.3),
+				{ BackgroundColor3 = color }
+			):Play()
+		end
 
 		-- Distance fade
 		local dist      = (workspace.CurrentCamera.CFrame.Position
@@ -82,6 +87,7 @@ function WearDisplay.Start(model: Model, labels: GUIBuilder.Labels, part: BasePa
 	-- Animate bar in on start
 	local wear = tonumber(model:GetAttribute("Wear")) or 100
 	animateBarIn(labels, wear)
+	shownWear = wear -- animateBarIn already set this colour
 
 	return conn
 end

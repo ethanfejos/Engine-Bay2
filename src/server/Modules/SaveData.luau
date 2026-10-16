@@ -15,11 +15,14 @@
     every save older than that number, in order. Never edit or remove an
     old step — saves that haven't loaded since then still need it.
 
-    Example: before launch, wipe the testing money from every save:
-        [2] = function(data)
-            data.money = 500 -- real starting balance
+    Example (step 3 below): every save's money set to the real starting
+    balance, replacing the $100,000 testing balance:
+        [3] = function(data)
+            data.money = STARTING_MONEY
         end
-    (Also lower TEMPLATE.money, which is what brand-new players get.)
+    Brand-new players get TEMPLATE.money instead (migrations don't run on
+    a fresh save). To change the balance of saves that already ran a step,
+    add a new step — never edit an old one.
 ]]
 
 local Types = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Types"))
@@ -35,6 +38,19 @@ export type CarRecord = {
 	missing: { [string]: boolean }, -- parts and bolts not in the engine
 	wear: { [string]: number },     -- condition of the parts that are in it
 	xpPaid: { [string]: boolean },  -- parts whose removal XP has been paid
+	inspected: { [string]: boolean }, -- parts (by name) this car's worker has inspected
+}
+
+-- A customer job in progress (JobService). Saved so leaving mid-job
+-- doesn't lose it: the customer's car is kept here, not in `cars`.
+export type JobRecord = {
+	id: string,
+	car: CarRecord,               -- the customer's car, as it is right now
+	customerName: string,
+	customerUserId: number?,      -- the friend whose avatar the customer wears
+	faults: { string },           -- part paths the customer asked to have fixed
+	pay: number,
+	request: string,              -- what the customer said
 }
 
 -- A player's save, as every service sees it after loading.
@@ -43,16 +59,20 @@ export type Data = {
 	inventory: { Item },
 	dropped: { [string]: Item },
 	xp: number,
-	inspectedForXp: { [string]: boolean },
 	money: number,
 	cars: { [string]: CarRecord },  -- [carId]
 	activeCarId: string?,           -- the car that spawns when they join
+	activeJob: JobRecord?,          -- the customer job in progress, if any
 }
 
 local SaveData = {}
 
+-- What every player starts with (and what step 3 set existing saves to).
+local STARTING_MONEY = 500
+SaveData.STARTING_MONEY = STARTING_MONEY
+
 -- Bump this together with adding a MIGRATIONS step.
-SaveData.CURRENT_VERSION = 2
+SaveData.CURRENT_VERSION = 4
 
 -- What a brand-new player starts with.
 local TEMPLATE: Data = {
@@ -69,11 +89,7 @@ local TEMPLATE: Data = {
 
 	xp = 0,
 
-	-- Parts this player has inspected: ["carId:partName"] = true
-	inspectedForXp = {},
-
-	-- Testing-phase starting balance; see the migration example above.
-	money = 100000,
+	money = STARTING_MONEY,
 
 	-- Cars the player owns, [carId] = CarRecord, and which one is in use.
 	-- (activeCarId starts unset; CarService gives a new player a starter car.)
@@ -92,6 +108,30 @@ local MIGRATIONS: { [number]: (data: any) -> () } = {
 	-- parts just need inspecting again once.
 	[2] = function(data)
 		data.inspectedForXp = {}
+	end,
+
+	-- 3: the $100,000 testing balance is replaced by the real starting
+	-- balance, for every save.
+	[3] = function(data)
+		data.money = STARTING_MONEY
+	end,
+
+	-- 4: inspections move from one ever-growing list ("carId:part") onto
+	-- each car's own record, so they leave with the car (job cars). Entries
+	-- for cars the player doesn't have are dropped.
+	[4] = function(data)
+		local old = data.inspectedForXp
+		data.inspectedForXp = nil
+		if type(old) ~= "table" or type(data.cars) ~= "table" then return end
+		for key in pairs(old) do
+			if type(key) ~= "string" then continue end
+			local carId, partName = string.match(key, "^(.-):(.+)$")
+			local car = carId and data.cars[carId]
+			if type(car) == "table" and partName then
+				car.inspected = if type(car.inspected) == "table" then car.inspected else {}
+				car.inspected[partName] = true
+			end
+		end
 	end,
 }
 
@@ -178,6 +218,30 @@ local function cleanCar(id: any, record: any): CarRecord?
 		missing = cleanStringSet(record.missing),
 		wear    = wear,
 		xpPaid  = cleanStringSet(record.xpPaid),
+		inspected = cleanStringSet(record.inspected),
+	}
+end
+
+-- A clean copy of a saved job, or nil if it can't be used.
+local function cleanJob(job: any): JobRecord?
+	if type(job) ~= "table" or type(job.id) ~= "string" or type(job.car) ~= "table" then return nil end
+	local car = cleanCar(job.car.id, job.car)
+	if not car then return nil end
+	local faults: { string } = {}
+	if type(job.faults) == "table" then
+		for _, path in ipairs(job.faults) do
+			if type(path) == "string" then table.insert(faults, path) end
+		end
+	end
+	if #faults == 0 then return nil end
+	return {
+		id             = job.id,
+		car            = car,
+		customerName   = if type(job.customerName) == "string" then job.customerName else "Customer",
+		customerUserId = if type(job.customerUserId) == "number" then job.customerUserId else nil,
+		faults         = faults,
+		pay            = math.max(0, math.floor(tonumber(job.pay) or 0)),
+		request        = if type(job.request) == "string" then job.request else "",
 	}
 end
 
@@ -200,18 +264,6 @@ function SaveData.Sanitize(data: any): { string }
 		money = 0
 	end
 	data.money = math.floor(money :: number)
-
-	-- Inspected set: only "string -> true"
-	if type(data.inspectedForXp) ~= "table" then
-		table.insert(notes, "inspectedForXp reset")
-		data.inspectedForXp = {}
-	end
-	for key, value in pairs(data.inspectedForXp) do
-		if type(key) ~= "string" or value ~= true then
-			data.inspectedForXp[key] = nil
-			table.insert(notes, "bad inspected entry removed")
-		end
-	end
 
 	-- Inventory: clean every item, drop broken ones and duplicate ids
 	local cleaned: { Item }, seen: { [string]: boolean } = {}, {}
@@ -262,6 +314,12 @@ function SaveData.Sanitize(data: any): { string }
 		end
 	end
 	data.cars = cars
+	if data.activeJob ~= nil then
+		local job = cleanJob(data.activeJob)
+		if not job then table.insert(notes, "activeJob dropped (malformed)") end
+		data.activeJob = job
+	end
+
 	if type(data.activeCarId) ~= "string" or cars[data.activeCarId] == nil then
 		if data.activeCarId ~= nil then
 			table.insert(notes, "activeCarId cleared (no such car)")

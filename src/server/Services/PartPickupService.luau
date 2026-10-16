@@ -313,6 +313,16 @@ function PartPickupService.CollectPart(itemId: string)
 	end
 end
 
+-- Moves every part this player has lying on the floor into their
+-- inventory (e.g. before a customer's car leaves, so its parts can go with it).
+function PartPickupService.CollectAllFor(player: Player)
+	for itemId, drop in pairs(droppedParts) do
+		if drop.player == player then
+			PartPickupService.CollectPart(itemId)
+		end
+	end
+end
+
 -- ── Dropping ──────────────────────────────────────────────────────────────────
 
 -- Called by EngineServer while the removed part still exists, so its look

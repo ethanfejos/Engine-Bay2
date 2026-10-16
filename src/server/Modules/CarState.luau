@@ -12,6 +12,11 @@
     - missing  paths the template has but the car doesn't (removed)
     - wear     each present part's Wear
     - xpPaid   present parts whose removal XP was already paid
+    (and `inspected`, which CarService keeps itself — see there)
+
+    A car's condition always comes from its record: any Inspectable part
+    the record has no wear for starts at DEFAULT_WEAR (perfect), never a
+    random value.
 ]]
 
 local SaveData = require(script.Parent:WaitForChild("SaveData"))
@@ -19,6 +24,8 @@ local SaveData = require(script.Parent:WaitForChild("SaveData"))
 type CarRecord = SaveData.CarRecord
 
 local CarState = {}
+
+CarState.DEFAULT_WEAR = 100
 
 -- Every Inspectable part and bolt under `engine`, by path.
 function CarState.Track(engine: Instance): { [string]: Instance }
@@ -51,6 +58,18 @@ function CarState.Paths(engine: Instance): { [string]: boolean }
 	return paths
 end
 
+-- The paths of the Inspectable parts (the ones that have a wear).
+function CarState.InspectablePaths(engine: Instance): { string }
+	local paths: { string } = {}
+	for path, model in pairs(CarState.Track(engine)) do
+		if model:GetAttribute("Inspectable") then
+			table.insert(paths, path)
+		end
+	end
+	table.sort(paths)
+	return paths
+end
+
 -- Writes the engine's current state into `record`. `allPaths` is the
 -- template's full set, so anything not in the engine now is "missing".
 function CarState.Snapshot(engine: Instance, allPaths: { [string]: boolean }, record: CarRecord)
@@ -79,7 +98,11 @@ function CarState.Apply(engine: Instance, record: CarRecord)
 			model:Destroy()
 		else
 			local w = record.wear[path]
-			if w then model:SetAttribute("Wear", w) end -- unset: EngineServer gives a random wear
+			if w then
+				model:SetAttribute("Wear", w)
+			elseif model:GetAttribute("Inspectable") then
+				model:SetAttribute("Wear", CarState.DEFAULT_WEAR)
+			end
 			if record.xpPaid[path] then model:SetAttribute("RemovalXpPaid", true) end
 		end
 	end

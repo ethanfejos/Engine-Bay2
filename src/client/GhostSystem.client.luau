@@ -57,7 +57,7 @@ local selectedCarId: string?            = nil
 -- belongs in it (same rule as the server: CarUtils.PartFits).
 local function getEngine(engineName: string, carId: string?): Model?
 	local engine = ZoneUtils.GetEngineForPlayer(player)
-	if engine and CarUtils.IsOwnedBy(engine, player) and CarUtils.PartFits(carId, engineName, engine) then
+	if engine and CarUtils.CanWorkOn(engine, player) and CarUtils.PartFits(carId, engineName, engine) then
 		return engine
 	end
 	return nil

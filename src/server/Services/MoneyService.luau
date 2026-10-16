@@ -2,9 +2,8 @@
 --[[
     MoneyService (ModuleScript, started by Main)
     --------------------------------------------
-    Server-authoritative money balance. Basic on purpose, for the testing
-    phase: every profile starts with a flat TEST_STARTING_BALANCE (set on
-    ProfileManager's template, not here — see PROFILE_TEMPLATE.money), and
+    Server-authoritative money balance. Every profile starts with
+    SaveData.STARTING_MONEY (set on SaveData's template, not here), and
     TEST_FLAT_COST is a placeholder $1 cost any future feature can charge
     without needing its own pricing yet (renting a bay, buying a part off
     the marketplace, etc.) — swap in real numbers later without touching

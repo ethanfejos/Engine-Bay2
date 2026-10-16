@@ -35,47 +35,59 @@ local function playReinstallEffect(model: Instance)
 	end
 	if #parts == 0 then return end
 
-	-- Store final positions then offset upward to start
-	local finalCFrames: { [BasePart]: CFrame } = {}
+	-- Remember each part exactly as the server set it (welded and unanchored
+	-- on a drivable car, maybe invisible for hitboxes), so it can be put
+	-- back afterwards. Only this client's copy is changed for the animation.
+	type Saved = { cframe: CFrame, transparency: number, anchored: boolean, canCollide: boolean, canQuery: boolean }
+	local saved: { [BasePart]: Saved } = {}
 	for _, part in ipairs(parts) do
-		finalCFrames[part] = part.CFrame
-		part.CFrame        = part.CFrame + Vector3.new(0, FLOAT_HEIGHT, 0)
-		part.Transparency  = 1
-		part.Anchored      = true
-		part.CanCollide    = false
-		part.CanQuery      = false
+		saved[part] = {
+			cframe       = part.CFrame,
+			transparency = part.Transparency,
+			anchored     = part.Anchored,
+			canCollide   = part.CanCollide,
+			canQuery     = part.CanQuery,
+		}
+		part.Anchored     = true -- held still locally while it floats down
+		part.CanCollide   = false
+		part.CanQuery     = false
+		part.CFrame       = part.CFrame + Vector3.new(0, FLOAT_HEIGHT, 0)
+		part.Transparency = 1
 	end
 
 	-- Small delay so the part is visible before animation starts
 	task.wait(0.05)
 
-	-- Tween down to final position and fade in
+	-- Float down to its place and fade in to its own transparency
 	for _, part in ipairs(parts) do
 		if not part.Parent then continue end
+		local s = saved[part]
 		TweenService:Create(part, TWEEN_INFO, {
-			CFrame       = finalCFrames[part],
-			Transparency = 0,
+			CFrame       = s.cframe,
+			Transparency = s.transparency,
 		}):Play()
 	end
 
-	-- Restore physics after animation
+	-- Fade in decals/textures to their own transparency
+	for _, desc in ipairs(model:GetDescendants()) do
+		if desc:IsA("Decal") then -- Textures are Decals too
+			local target = desc.Transparency
+			desc.Transparency = 1
+			TweenService:Create(desc, TWEEN_INFO, { Transparency = target }):Play()
+		end
+	end
+
+	-- Hand the part back to physics exactly as the server set it, so a
+	-- welded part moves with the car again.
 	task.delay(DURATION + 0.1, function()
-		for _, part in ipairs(parts) do
-			if part and part.Parent then
-				part.CanCollide = true
-				part.CanQuery   = true
-				-- Leave anchored — engine parts should stay anchored
+		for part, s in pairs(saved) do
+			if part.Parent then
+				part.Anchored   = s.anchored
+				part.CanCollide = s.canCollide
+				part.CanQuery   = s.canQuery
 			end
 		end
 	end)
-
-	-- Fade in decals/textures
-	for _, desc in ipairs(model:GetDescendants()) do
-		if desc:IsA("Decal") then -- Textures are Decals too
-			desc.Transparency = 1
-			TweenService:Create(desc, TWEEN_INFO, { Transparency = 0 }):Play()
-		end
-	end
 end
 
 -- ── Event ─────────────────────────────────────────────────────────────────────

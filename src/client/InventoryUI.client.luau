@@ -335,7 +335,7 @@ end)
 -- reinstall would really be accepted right now.
 local function getStatus(item: Item, bayEngine: Model?): (string?, Color3?)
 	local wear = tonumber(item.wear) or 0
-	if bayEngine and CarUtils.IsOwnedBy(bayEngine, player)
+	if bayEngine and CarUtils.CanWorkOn(bayEngine, player)
 		and CarUtils.PartFits(item.carId, item.engineName, bayEngine)
 		and not bayEngine:FindFirstChild(item.name) then
 		local template = RepairRules.FindTemplate(item.engineName, item.name)

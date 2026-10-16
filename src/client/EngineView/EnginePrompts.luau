@@ -64,7 +64,7 @@ local function isModelVisible(model: Model): boolean
 end
 
 local function refresh(engine: Model, prompt: ProximityPrompt)
-	local enabled = CarUtils.IsOwnedBy(engine, player)
+	local enabled = CarUtils.CanWorkOn(engine, player)
 		and engine ~= viewingEngine
 		and ZoneUtils.GetZoneForPosition(engine:GetPivot().Position) ~= nil
 	if prompt.Enabled ~= enabled then
@@ -119,7 +119,7 @@ local function wire(engine: Model)
 			return
 		end
 
-		if not CarUtils.IsOwnedBy(engine, player) then
+		if not CarUtils.CanWorkOn(engine, player) then
 			log.debug("Entry blocked: not your car", engine.Name)
 			return
 		end

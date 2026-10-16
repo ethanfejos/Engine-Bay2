@@ -11,8 +11,8 @@
     same key the server saves, so a reinstalled part stays inspected.
 
     The server is the authority. This module listens for:
-    - InspectedSync  the player's saved inspected parts, sent when their
-                     profile loads, so progress survives rejoining
+    - InspectedSync  a car's saved inspected parts, sent when the car is
+                     spawned for this player, so progress survives rejoining
     - PartInspected  (engine, part, false) when the server refuses an
                      inspection, which un-marks it here
 

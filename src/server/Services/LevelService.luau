@@ -19,14 +19,14 @@
     - PartInspected  (client -> server) the hold finished. Accepted only if
                        it's the same part and at least the dwell time
                        (PartRules.INSPECT_DWELL_TIME) has passed on the
-                       SERVER's clock. Accepted inspections are saved in
-                       profile.Data.inspectedForXp, which EngineServer also
-                       uses to require inspection before removal.
+                       SERVER's clock. Accepted inspections are saved on
+                       the car's record (CarService.MarkInspected), which
+                       EngineServer also uses to require inspection before
+                       removal.
       (server -> client) (engineName, partName, false, key) when
                        refused, so the client un-marks the part.
-    - InspectedSync  (server -> client) the player's saved inspected parts,
-                       sent when their profile loads, so progress survives
-                       rejoining.
+    - InspectedSync  (server -> client) sent by CarService when a car is
+                       spawned for the player: that car's inspected parts.
 
     Other scripts call LevelService.AddXP(player, amount, reason) directly
     (EngineServer on removal, RepairService on repair completion)
@@ -44,6 +44,7 @@ local LevelCurve      = require(ReplicatedStorage:WaitForChild("Shared"):WaitFor
 local ZoneUtils       = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 local PartRules       = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("PartRules"))
 local CarUtils        = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("CarUtils"))
+local CarService      = require(script.Parent.CarService)
 local Log             = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Log"))
 
 local log = Log.new("LevelService")
@@ -54,6 +55,7 @@ local XP_AWARDS = {
 	remove  = 15,
 	repair  = 25,
 	inspect = 10,
+	job     = 50,  -- a customer job handed back (JobService)
 }
 
 -- ── Remotes ───────────────────────────────────────────────────────────────────
@@ -64,7 +66,6 @@ local leveledUp        = Remotes.LeveledUp
 local requestXp        = Remotes.RequestXp
 local partInspected    = Remotes.PartInspected
 local inspectStart     = Remotes.InspectStart
-local inspectedSync    = Remotes.InspectedSync
 
 -- ── Public API ────────────────────────────────────────────────────────────────
 
@@ -110,18 +111,10 @@ end)
 
 -- LevelUI's RequestXp usually arrives before the profile has loaded and gets
 -- nothing back, which left the bar at "LEVEL 1" until the first XP gain.
--- Push as soon as the profile is ready instead.
--- Push as soon as the profile is ready instead. The saved inspected parts
--- go out at the same time, so the client's inspection state matches the
--- server's after rejoining.
-ProfileManager.OnProfileLoaded(function(player, profile)
+-- Push as soon as the profile is ready instead. (Inspected parts are sent
+-- by CarService, per car, when a car is spawned for the player.)
+ProfileManager.OnProfileLoaded(function(player)
 	pushXpToClient(player)
-
-	local keys = {}
-	for key in pairs(profile.Data.inspectedForXp) do
-		table.insert(keys, key)
-	end
-	inspectedSync:FireClient(player, keys)
 end)
 
 -- ── Inspection ────────────────────────────────────────────────────────────────
@@ -151,7 +144,7 @@ local function resolvePart(player: Player, engineName: any, partName: any): (Mod
 	if not engine or engine.Name ~= engineName then
 		return nil, "engine mismatch"
 	end
-	if not CarUtils.IsOwnedBy(engine, player) then
+	if not CarUtils.CanWorkOn(engine, player) then
 		return nil, "not your car"
 	end
 	local model = engine:FindFirstChild(partName)
@@ -194,7 +187,7 @@ partInspected.OnServerEvent:Connect(function(player, engineName, partName)
 	inspectStarts[player] = nil
 
 	-- Already inspected (e.g. a reinstalled part): nothing to record or pay.
-	if profile.Data.inspectedForXp[key] then return end
+	if CarService.IsInspected(model) then return end
 
 	if not start or start.key ~= key then
 		return refuse("no matching InspectStart", key)
@@ -205,7 +198,9 @@ partInspected.OnServerEvent:Connect(function(player, engineName, partName)
 
 	-- Saved, so it survives rejoining, can't be re-farmed after a reinstall,
 	-- and lets EngineServer require inspection before removal.
-	profile.Data.inspectedForXp[key] = true
+	if not CarService.MarkInspected(model) then
+		return refuse("car isn't a saved car", key)
+	end
 	LevelService.AddXP(player, XP_AWARDS.inspect, "inspect")
 end)
 

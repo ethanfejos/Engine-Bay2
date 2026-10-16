@@ -15,6 +15,10 @@
 
 local ZoneUtils = {}
 
+-- Set on a bay (zone part) by BayRentalService while a player rents it:
+-- the renter's UserId. Visible to every client (the "your bay" marker).
+ZoneUtils.RENTED_BY_ATTRIBUTE = "RentedBy"
+
 -- ── Position math ─────────────────────────────────────────────────────────────
 
 -- Is a world position inside a zone part's bounds?
@@ -68,6 +72,12 @@ function ZoneUtils.GetZoneType(zone: Instance?): string?
 		return zoneType
 	end
 	return nil
+end
+
+-- The UserId of the player renting this bay, or nil if nobody is.
+function ZoneUtils.GetRenter(zone: Instance): number?
+	local renter = zone:GetAttribute(ZoneUtils.RENTED_BY_ATTRIBUTE)
+	return if type(renter) == "number" then renter else nil
 end
 
 -- ── Engine lookup ─────────────────────────────────────────────────────────────

@@ -2,29 +2,38 @@
 --[[
     CarService (ModuleScript, started by Main)
     ------------------------------------------
-    Cars: their identity, their owner, and saving them. See CarUtils for
-    what counts as a car.
+    Cars: their identity, who may work on them, saving them, and putting
+    them in a bay. See CarUtils for what counts as a car.
 
     Identity: every car in the world has a unique "CarId" attribute and the
-    "Car" tag. A player's car keeps the same id every session (it's saved).
+    "Car" tag. A saved car keeps the same id every session.
 
-    Each player's car is saved and comes back exactly as they left it:
-    - Join: the player's active car (profile.Data.cars / activeCarId) is
-      cloned from its template in ServerStorage.Cars, set up from the save
-      (missing parts removed, each part's wear restored), owned by them and
-      placed in a free bay. A player with no car gets a starter car.
-    - While playing: every removal and reinstall updates the save straight
-      away (EngineServer / InventoryService call RecordChange), so a server
-      crash can't leave a part both in the car and in the inventory.
-    - Leave: saved one last time and removed from the world.
+    Every spawned car comes from a record (SaveData.CarRecord) and is kept
+    exactly in step with it:
+    - SpawnCar(worker, record, bay, owned) clones record.model from
+      ServerStorage.Cars, sets it up from the record (missing parts
+      removed, every part's wear from the record — never random), marks
+      `worker` as the one allowed to work on it (WorkerUserId), and places
+      it in the bay. `owned` = it's the worker's own car (OwnerUserId too);
+      a customer's car isn't.
+    - Where the record is saved is up to the caller: a player's own car
+      lives in profile.Data.cars, a customer's car in their active job.
+      CarService only ever changes the record table it was given.
+    - Every removal and reinstall updates the record straight away
+      (RecordChange), so a crash can't leave a part both in the car and in
+      the inventory.
+    - Inspections are kept on the record too (IsInspected / MarkInspected),
+      so they leave with the car instead of piling up in the save.
+    - When the worker leaves, each of their cars is saved one last time and
+      removed.
 
-    Where a car appears is decided by findSpawnZone — for now the first free
-    bay of SPAWN_ZONE_TYPE. Parking spots (rented bays) and owned workshops
-    plug in there later.
+    Own cars: SpawnActiveCar spawns the player's garage car (a starter car
+    if they have none). Not used right now — players work on customers'
+    cars until the junkyard exists (BayRentalService.SPAWN_OWN_CAR).
 
-    Setup in the place file: put each car model in ServerStorage.Cars (its
-    engine is any Model inside it with an EngineTrigger, as before). Cars
-    left in the Workspace still get ids, but nobody owns them.
+    Setup in the place file: car models in ServerStorage.Cars (the engine is
+    any Model inside with an EngineTrigger). Cars left in the Workspace get
+    ids, but nobody can work on them.
 ]]
 
 local CollectionService = game:GetService("CollectionService")
@@ -35,8 +44,9 @@ local ServerStorage     = game:GetService("ServerStorage")
 local Workspace         = game:GetService("Workspace")
 
 local Modules        = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules")
-local ZoneUtils      = require(Modules:WaitForChild("ZoneUtils"))
 local CarUtils       = require(Modules:WaitForChild("CarUtils"))
+local Remotes        = require(Modules:WaitForChild("Remotes"))
+local Signal         = require(Modules:WaitForChild("Signal"))
 local Log            = require(Modules:WaitForChild("Log"))
 local ProfileManager = require(script.Parent.Parent.Modules.ProfileManager)
 local SaveData       = require(script.Parent.Parent.Modules.SaveData)
@@ -49,21 +59,23 @@ type Profile   = ProfileManager.Profile
 
 -- ── Config ────────────────────────────────────────────────────────────────────
 
-local STARTER_MODEL: string? = nil  -- template name for new players; nil = first in ServerStorage.Cars (A–Z)
-local SPAWN_ZONE_TYPE        = "Mechanic"
-local SPAWN_RETRY            = 3    -- seconds between tries when every bay is taken
+local STARTER_MODEL: string? = nil  -- starter car template; nil = first in ServerStorage.Cars (A–Z)
 local FLOOR_GAP              = 0.05 -- studs left under the car when placing it
 
 local CarService = {}
+
+-- Fired with (carId) whenever a spawned car's record changes because a part
+-- or bolt was removed or put back (JobService watches job progress with it).
+CarService.CarChanged = Signal.new()
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 
 -- [carId] = car, for every car in the world
 local carsById: { [string]: Instance } = {}
 
--- Players' spawned cars: [player] = { car, record }
-type ActiveCar = { car: Model, record: CarRecord }
-local activeCars: { [Player]: ActiveCar } = {}
+-- Every car CarService has spawned: [carId] = { car, record, worker, owned }
+type Spawned = { car: Model, record: CarRecord, worker: Player, owned: boolean }
+local spawned: { [string]: Spawned } = {}
 
 -- Bays a car is being placed in right now: [zoneName] = true
 local reservedZones: { [string]: boolean } = {}
@@ -164,7 +176,30 @@ local function applyRecord(car: Model, record: CarRecord)
 	end
 end
 
--- A player's active car record, creating a starter car if they have none.
+-- The Inspectable part paths of a template, worked out once per model.
+local inspectableCache: { [string]: { string } } = {}
+local function inspectablePaths(modelName: string): { string }
+	local cached = inspectableCache[modelName]
+	if cached then return cached end
+	local templates = getTemplates()
+	local template = templates and templates:FindFirstChild(modelName)
+	local engine = template and findEngine(template)
+	local paths = if engine then CarState.InspectablePaths(engine) else {}
+	inspectableCache[modelName] = paths
+	return paths
+end
+
+-- The spawned entry for a car (or anything inside one), or nil.
+local function entryFor(instance: Instance): Spawned?
+	local id = CarUtils.GetCarId(instance)
+	local entry = if id then spawned[id] else nil
+	if entry and entry.car == CarUtils.GetCar(instance) then
+		return entry
+	end
+	return nil
+end
+
+-- A player's own (garage) car record, creating a starter car if they have none.
 local function ensureActiveCar(profile: Profile): CarRecord?
 	local data = profile.Data
 	local activeId = data.activeCarId
@@ -172,51 +207,20 @@ local function ensureActiveCar(profile: Profile): CarRecord?
 		return data.cars[activeId]
 	end
 
-	local templates = getTemplates()
-	if not templates then return nil end
-	local modelName = STARTER_MODEL
-	if not modelName then
-		local names = {}
-		for _, child in ipairs(templates:GetChildren()) do
-			if child:IsA("Model") then table.insert(names, child.Name) end
-		end
-		table.sort(names)
-		modelName = names[1]
-	end
+	local modelName = STARTER_MODEL or CarService.ListModels()[1]
 	if not modelName then return nil end
 
-	local record: CarRecord = {
-		id      = HttpService:GenerateGUID(false),
-		model   = modelName,
-		missing = {},
-		wear    = {},
-		xpPaid  = {},
-	}
+	-- Starter cars get a random condition, part by part.
+	local record = CarService.NewRecord(modelName, function()
+		return math.random(10, 100)
+	end)
+	if not record then return nil end
 	data.cars[record.id] = record
 	data.activeCarId = record.id
 	return record
 end
 
--- ── Where a car appears ───────────────────────────────────────────────────────
-
--- The bay a player's car spawns in: the first free bay of SPAWN_ZONE_TYPE
--- (no car parked in it, none being placed). Later: a parking spot for
--- players renting a bay, their own workshop for players who bought one.
-local function findSpawnZone(_player: Player): BasePart?
-	local zonesFolder = Workspace:FindFirstChild("EngineZones")
-	if not zonesFolder then return nil end
-	local zones = zonesFolder:GetChildren()
-	table.sort(zones, function(a, b) return a.Name < b.Name end)
-	for _, zone in ipairs(zones) do
-		if zone:IsA("BasePart")
-			and ZoneUtils.GetZoneType(zone) == SPAWN_ZONE_TYPE
-			and not reservedZones[zone.Name]
-			and ZoneUtils.GetEngineInZone(zone) == nil then
-			return zone
-		end
-	end
-	return nil
-end
+-- ── Placing a car ─────────────────────────────────────────────────────────────
 
 -- Half the height a box really takes up in the world, whatever way it's
 -- rotated (a model's bounding box follows its pivot, which on many cars —
@@ -265,68 +269,129 @@ end
 
 -- ── Spawning and despawning ───────────────────────────────────────────────────
 
-local function spawnCar(player: Player, profile: Profile)
-	local record = ensureActiveCar(profile)
-	if not record then
-		log.warn("No car for", player.Name, "- put car models in ServerStorage.Cars")
-		return
+-- Tells the worker's client which parts of this car they've inspected.
+local function syncInspections(worker: Player, record: CarRecord)
+	local keys = {}
+	for partName in pairs(record.inspected) do
+		table.insert(keys, record.id .. ":" .. partName)
 	end
+	Remotes.InspectedSync:FireClient(worker, keys)
+end
+
+local function despawn(carId: string)
+	local entry = spawned[carId]
+	if not entry then return end
+	spawned[carId] = nil
+	snapshot(entry.car, entry.record)
+	entry.car:Destroy()
+end
+
+-- ── Public ────────────────────────────────────────────────────────────────────
+
+-- Car models available in ServerStorage.Cars, A–Z.
+function CarService.ListModels(): { string }
+	local names = {}
+	local templates = getTemplates()
+	if templates then
+		for _, child in ipairs(templates:GetChildren()) do
+			if child:IsA("Model") then table.insert(names, child.Name) end
+		end
+	end
+	table.sort(names)
+	return names
+end
+
+-- The Inspectable part paths of a car model ("Alternator", ...).
+function CarService.GetPartPaths(modelName: string): { string }
+	return table.clone(inspectablePaths(modelName))
+end
+
+-- A brand-new record for a car of `modelName` with a new id, nothing
+-- missing, and every part's wear set: wearFor(path) for each part, or
+-- perfect (100) if no wearFor is given. Saving it is up to the caller.
+function CarService.NewRecord(modelName: string, wearFor: ((path: string) -> number)?): CarRecord?
+	local templates = getTemplates()
+	if not templates or not templates:FindFirstChild(modelName) then
+		log.warn("No car model", modelName, "in ServerStorage.Cars")
+		return nil
+	end
+	local wear: { [string]: number } = {}
+	for _, path in ipairs(inspectablePaths(modelName)) do
+		wear[path] = math.clamp(if wearFor then wearFor(path) else CarState.DEFAULT_WEAR, 0, 100)
+	end
+	return {
+		id        = HttpService:GenerateGUID(false),
+		model     = modelName,
+		missing   = {},
+		wear      = wear,
+		xpPaid    = {},
+		inspected = {},
+	}
+end
+
+-- Spawns the car `record` describes in `zone`, for `worker` to work on.
+-- `owned`: it's the worker's own car. Returns the car, or nil if it
+-- couldn't be spawned (a warning says why).
+function CarService.SpawnCar(worker: Player, record: CarRecord, zone: BasePart, owned: boolean): Model?
+	local existing = spawned[record.id]
+	if existing then return existing.car end
+
 	local templates = getTemplates()
 	local template = templates and templates:FindFirstChild(record.model)
 	if not template or not template:IsA("Model") then
-		log.warn("No template", record.model, "in ServerStorage.Cars for", player.Name)
-		return
+		log.warn("No template", record.model, "in ServerStorage.Cars for", worker.Name)
+		return nil
 	end
-
-	-- Wait for a free bay (every bay may be taken).
-	local zone: BasePart
-	while true do
-		local found = findSpawnZone(player)
-		if found then
-			zone = found
-			break
-		end
-		if not player:IsDescendantOf(Players) then return end
-		log.debug("No free bay for", player.Name, "- retrying")
-		task.wait(SPAWN_RETRY)
-	end
-	if not player:IsDescendantOf(Players) or activeCars[player] then return end
 
 	reservedZones[zone.Name] = true
-	local ok, err = pcall(function()
+	local ok, result = pcall(function(): Model
 		local car = template:Clone()
 		car:SetAttribute(CarUtils.ID_ATTRIBUTE, record.id)
-		car:SetAttribute(CarUtils.OWNER_ATTRIBUTE, player.UserId)
+		car:SetAttribute(CarUtils.WORKER_ATTRIBUTE, worker.UserId)
+		if owned then
+			car:SetAttribute(CarUtils.OWNER_ATTRIBUTE, worker.UserId)
+		end
 		applyRecord(car, record)
 		placeInZone(car, zone)
 		car.Parent = carsFolder
 		register(car)
-		activeCars[player] = { car = car, record = record }
-		log.debug("Spawned", record.model, "for", player.Name, "in", zone.Name)
-
-		-- Brand-new parts get a random wear from EngineServer a moment after
-		-- spawning; save it so it's the same next time.
-		task.delay(1, function()
-			if activeCars[player] and activeCars[player].car == car then
-				snapshot(car, record)
-			end
-		end)
+		return car
 	end)
 	reservedZones[zone.Name] = nil
+
 	if not ok then
-		log.warn("Couldn't spawn car for", player.Name, err)
+		log.warn("Couldn't spawn", record.model, "for", worker.Name, result)
+		return nil
 	end
+	local car = result :: Model
+	spawned[record.id] = { car = car, record = record, worker = worker, owned = owned }
+	snapshot(car, record) -- the record now matches the car exactly
+	syncInspections(worker, record)
+	log.debug("Spawned", record.model, "for", worker.Name, "in", zone.Name)
+	return car
 end
 
-local function despawnCar(player: Player)
-	local active = activeCars[player]
-	if not active then return end
-	activeCars[player] = nil
-	snapshot(active.car, active.record)
-	active.car:Destroy()
+-- Saves and removes a spawned car (e.g. a customer's car going home).
+function CarService.DespawnCar(carId: string)
+	despawn(carId)
 end
 
--- ── Public ────────────────────────────────────────────────────────────────────
+-- Spawns the player's own car (a starter car if they have none) in `zone`.
+function CarService.SpawnActiveCar(player: Player, zone: BasePart): Model?
+	local profile = ProfileManager.GetProfile(player)
+	if not profile then return nil end
+	local record = ensureActiveCar(profile)
+	if not record then
+		log.warn("No car for", player.Name, "- put car models in ServerStorage.Cars")
+		return nil
+	end
+	return CarService.SpawnCar(player, record, zone, true)
+end
+
+-- Is a car being placed in this bay right now?
+function CarService.IsPlacingIn(zoneName: string): boolean
+	return reservedZones[zoneName] == true
+end
 
 function CarService.GetCar(carId: string): Instance?
 	return carsById[carId]
@@ -336,15 +401,34 @@ function CarService.GetOwnedCar(player: Player): Instance?
 	return CarUtils.FindCarOwnedBy(player.UserId)
 end
 
+-- The record of a spawned car (or of the car something is inside), or nil.
+function CarService.GetRecord(instance: Instance): CarRecord?
+	local entry = entryFor(instance)
+	return entry and entry.record
+end
+
+-- Has this car's worker inspected `part` (a part directly in the engine)?
+function CarService.IsInspected(part: Instance): boolean
+	local entry = entryFor(part)
+	return entry ~= nil and entry.record.inspected[part.Name] == true
+end
+
+-- Records that `part` has been inspected. False if the car isn't a
+-- spawned (saved) car — nothing to record it on.
+function CarService.MarkInspected(part: Instance): boolean
+	local entry = entryFor(part)
+	if not entry then return false end
+	entry.record.inspected[part.Name] = true
+	return true
+end
+
 -- Call after a part or bolt is removed from or put back into a car, so the
--- save matches the car straight away.
+-- record matches the car straight away.
 function CarService.RecordChange(instance: Instance)
-	local car = CarUtils.GetCar(instance)
-	for _, active in pairs(activeCars) do
-		if active.car == car then
-			snapshot(car, active.record)
-			return
-		end
+	local entry = entryFor(instance)
+	if entry then
+		snapshot(entry.car, entry.record)
+		CarService.CarChanged:Fire(entry.record.id)
 	end
 end
 
@@ -356,14 +440,17 @@ end
 Workspace.DescendantAdded:Connect(check)
 
 if not getTemplates() then
-	log.warn("ServerStorage.Cars is missing — players won't get a car")
+	log.warn("ServerStorage.Cars is missing — no cars can be spawned")
 end
 
-ProfileManager.OnProfileLoaded(spawnCar)
-
--- Saved one last time and removed, right before the profile is released.
+-- Every car a leaving player works on is saved one last time and removed,
+-- right before their profile is released.
 ProfileManager.OnBeforeRelease(function(player)
-	despawnCar(player)
+	for carId, entry in pairs(spawned) do
+		if entry.worker == player then
+			despawn(carId)
+		end
+	end
 end)
 
 return CarService

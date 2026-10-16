@@ -96,6 +96,26 @@ function InventoryService.HasPartById(player: Player, itemId: any): (boolean, It
 	return false, nil
 end
 
+-- Removes every part that came from `carId` (a customer's car going home
+-- takes its parts with it). Returns how many were removed.
+function InventoryService.RemovePartsFromCar(player: Player, carId: string): number
+	local profile = ProfileService.GetProfile(player)
+	if not profile then return 0 end
+	local kept, removed = {}, 0
+	for _, item in ipairs(profile.Data.inventory) do
+		if item.carId == carId then
+			removed += 1
+		else
+			table.insert(kept, item)
+		end
+	end
+	if removed > 0 then
+		profile.Data.inventory = kept
+		inventoryUpdated:FireClient(player, kept)
+	end
+	return removed
+end
+
 function InventoryService.GetInventory(player: Player): { Item }
 	local profile = ProfileService.GetProfile(player)
 	if not profile then return {} end
@@ -130,6 +150,67 @@ requestInventory.OnServerEvent:Connect(function(player)
 end)
 
 -- ── Reinstall Handler ─────────────────────────────────────────────────────────
+
+-- Is `instance` inside a part or bolt that can itself be removed?
+local function isInRemovable(instance: Instance, engine: Instance): boolean
+	local current: Instance? = instance
+	while current and current ~= engine do
+		if current:GetAttribute("Inspectable") or current:GetAttribute("IsBolt") then
+			return true
+		end
+		current = current.Parent
+	end
+	return false
+end
+
+-- What a reinstalled part is welded to: a fixed part of the engine (never
+-- another removable part, or removing that one would drop this one too).
+-- The engine's PrimaryPart if it qualifies, otherwise its biggest fixed part.
+local function weldTarget(engine: Model): BasePart?
+	local primary = engine.PrimaryPart
+	if primary and not isInRemovable(primary, engine) then
+		return primary
+	end
+	local best: BasePart? = nil
+	local bestVolume = -1
+	for _, d in ipairs(engine:GetDescendants()) do
+		if d:IsA("BasePart") and d.Name ~= "EngineTrigger" and not isInRemovable(d, engine) then
+			local volume = d.Size.X * d.Size.Y * d.Size.Z
+			if volume > bestVolume then
+				best, bestVolume = d, volume
+			end
+		end
+	end
+	return best
+end
+
+-- Joins a reinstalled part to the car so it moves with it (the cars are
+-- drivable): every BasePart of the part is welded to the engine's fixed part
+-- and takes its Anchored state — unanchored on a live car, anchored on a
+-- static one. Call once the part is in place in the engine.
+local function attachToEngine(part: Instance, engine: Model)
+	local target = weldTarget(engine)
+	if not target then
+		warn("[InventoryService] No fixed engine part to weld to in", engine:GetFullName())
+		return
+	end
+	local baseParts: { BasePart } = {}
+	if part:IsA("BasePart") then table.insert(baseParts, part) end
+	for _, d in ipairs(part:GetDescendants()) do
+		if d:IsA("BasePart") then table.insert(baseParts, d) end
+	end
+	for _, bp in ipairs(baseParts) do
+		local weld  = Instance.new("WeldConstraint")
+		weld.Name   = "ReinstallWeld"
+		weld.Part0  = target
+		weld.Part1  = bp
+		weld.Parent = bp
+	end
+	-- Unanchor only after every weld exists, so nothing drops in between.
+	for _, bp in ipairs(baseParts) do
+		bp.Anchored = target.Anchored
+	end
+end
 
 -- Every rejected reinstall tells the client why AND resends the real
 -- inventory. GhostSystem hides the part from the list optimistically when
@@ -169,7 +250,7 @@ reinstallEvent.OnServerEvent:Connect(function(player, itemId)
 		return
 	end
 
-	if not CarUtils.IsOwnedBy(engine, player) then
+	if not CarUtils.CanWorkOn(engine, player) then
 		rejectReinstall(player, "FAILED", "not your car")
 		return
 	end
@@ -215,15 +296,19 @@ reinstallEvent.OnServerEvent:Connect(function(player, itemId)
 	-- This part has already paid removal XP once (that's how it got into the
 	-- inventory), so removing it again pays nothing. See EngineServer.
 	clone:SetAttribute("RemovalXpPaid", true)
-	clone.Parent = engine
 
-	-- Apply relative CFrame to position correctly relative to engine pivot
+	-- Position it relative to the engine's pivot BEFORE it enters the world,
+	-- so it never appears at the template's position for a frame.
 	local rd = item.relativeData
-	if rd then
+	if rd and clone:IsA("PVInstance") then
 		local relativeCF = CFrame.new(rd.x, rd.y, rd.z)
 			* CFrame.fromEulerAnglesXYZ(rd.rx, rd.ry, rd.rz)
 		clone:PivotTo(engine:GetPivot() * relativeCF)
 	end
+	clone.Parent = engine
+
+	-- Weld it to the car, so it moves with the car instead of staying behind.
+	attachToEngine(clone, engine)
 
 	-- Fire reinstall animation to client
 	partReinstalledEvent:FireClient(player, clone)

@@ -164,7 +164,7 @@ removeEvent.OnServerEvent:Connect(function(player, model)
 		refuse(player, "FAILED", model, "not in this bay's engine")
 		return
 	end
-	if not CarUtils.IsOwnedBy(engine, player) then
+	if not CarUtils.CanWorkOn(engine, player) then
 		refuse(player, "FAILED", model, "not your car")
 		return
 	end
@@ -182,16 +182,15 @@ removeEvent.OnServerEvent:Connect(function(player, model)
 		return
 	end
 
-	-- Parts must have been inspected by this player first. The inspected set
-	-- is saved on the server (LevelService records it), so this can't be
-	-- skipped by a client that never ran the inspection tool.
+	-- Parts must have been inspected first. Inspections are saved on the
+	-- car's record on the server (LevelService records them), so this can't
+	-- be skipped by a client that never ran the inspection tool.
 	local profile = ProfileManager.GetProfile(player)
 	if not profile then
 		refuse(player, "FAILED", model, "save not loaded")
 		return
 	end
-	local key = PartRules.InspectKeyForModel(model)
-	if not key or not profile.Data.inspectedForXp[key] then
+	if not CarService.IsInspected(model) then
 		refuse(player, "NOT_INSPECTED", model)
 		return
 	end

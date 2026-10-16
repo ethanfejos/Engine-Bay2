@@ -12,8 +12,11 @@
 
     CarService (server) gives every car:
     - a "CarId" attribute (unique, so identical copies are still different
-      cars; a player's saved car keeps its id every session) and the "Car" tag
-    - an "OwnerUserId" attribute on a player's own car
+      cars; a saved car keeps its id every session) and the "Car" tag
+    - "WorkerUserId": the player allowed to work on it (inspect, remove,
+      reinstall, open the engine bay). Every check uses this.
+    - "OwnerUserId": only on a player's own car (their garage). A customer's
+      car has a worker but no player owner.
 
     Parts in the inventory remember the carId they came from and only go
     back into that car. Parts from before car ids (no carId), or from a car
@@ -31,6 +34,7 @@ local CarUtils = {}
 CarUtils.TAG             = "Car"
 CarUtils.ID_ATTRIBUTE    = "CarId"
 CarUtils.OWNER_ATTRIBUTE = "OwnerUserId"
+CarUtils.WORKER_ATTRIBUTE = "WorkerUserId"
 
 -- The car an engine (or any part of a car) belongs to.
 function CarUtils.GetCar(instance: Instance): Instance
@@ -50,6 +54,17 @@ end
 
 function CarUtils.IsOwnedBy(instance: Instance, player: Player): boolean
 	return CarUtils.GetOwnerUserId(instance) == player.UserId
+end
+
+-- UserId of the player allowed to work on the car, or nil.
+function CarUtils.GetWorkerUserId(instance: Instance): number?
+	local worker = CarUtils.GetCar(instance):GetAttribute(CarUtils.WORKER_ATTRIBUTE)
+	return if type(worker) == "number" then worker else nil
+end
+
+-- May this player work on the car (inspect, remove, reinstall, engine bay)?
+function CarUtils.CanWorkOn(instance: Instance, player: Player): boolean
+	return CarUtils.GetWorkerUserId(instance) == player.UserId
 end
 
 -- The car with this id that's in the world right now, or nil.

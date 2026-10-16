@@ -84,7 +84,7 @@ function PartRules.GetReinstallBlocker(template: Instance, engine: Instance): st
 end
 
 -- The key a part's inspection is remembered by, on both client and server
--- (the server saves it in profile.Data.inspectedForXp): the car's id + the
+-- (the server keeps it on the car's record, by part name): the car's id + the
 -- part name, so each car is inspected separately and a part reinstalled in
 -- the same car stays inspected. Falls back to the engine name for an
 -- engine CarService hasn't given an id yet.

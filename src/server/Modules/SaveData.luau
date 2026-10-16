@@ -26,6 +26,17 @@ local Types = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"
 
 type Item = Types.InventoryItem
 
+-- A car the player owns (CarService). Part states are keyed by the part's
+-- path inside the engine ("Alternator", "Alternator/Bolt#2"); anything not
+-- listed is as the car's template has it.
+export type CarRecord = {
+	id: string,                     -- the car's CarId, the same every session
+	model: string,                  -- template name in ServerStorage.Cars
+	missing: { [string]: boolean }, -- parts and bolts not in the engine
+	wear: { [string]: number },     -- condition of the parts that are in it
+	xpPaid: { [string]: boolean },  -- parts whose removal XP has been paid
+}
+
 -- A player's save, as every service sees it after loading.
 export type Data = {
 	dataVersion: number,
@@ -34,6 +45,8 @@ export type Data = {
 	xp: number,
 	inspectedForXp: { [string]: boolean },
 	money: number,
+	cars: { [string]: CarRecord },  -- [carId]
+	activeCarId: string?,           -- the car that spawns when they join
 }
 
 local SaveData = {}
@@ -61,6 +74,10 @@ local TEMPLATE: Data = {
 
 	-- Testing-phase starting balance; see the migration example above.
 	money = 100000,
+
+	-- Cars the player owns, [carId] = CarRecord, and which one is in use.
+	-- (activeCarId starts unset; CarService gives a new player a starter car.)
+	cars = {},
 }
 SaveData.TEMPLATE = TEMPLATE
 
@@ -131,6 +148,39 @@ local function cleanItem(item: any): (Item?, string?)
 	} :: Item), nil
 end
 
+-- { [string] = true } with only string keys.
+local function cleanStringSet(t: any): { [string]: boolean }
+	local out: { [string]: boolean } = {}
+	if type(t) == "table" then
+		for k, v in pairs(t) do
+			if type(k) == "string" and v == true then out[k] = true end
+		end
+	end
+	return out
+end
+
+-- A clean copy of a car record, or nil if it can't be used.
+local function cleanCar(id: any, record: any): CarRecord?
+	if type(id) ~= "string" or id == "" or type(record) ~= "table" then return nil end
+	if type(record.model) ~= "string" or record.model == "" then return nil end
+	local wear: { [string]: number } = {}
+	if type(record.wear) == "table" then
+		for path, w in pairs(record.wear) do
+			local n = tonumber(w)
+			if type(path) == "string" and n and n == n then
+				wear[path] = math.clamp(n, 0, 100)
+			end
+		end
+	end
+	return {
+		id      = id,
+		model   = record.model,
+		missing = cleanStringSet(record.missing),
+		wear    = wear,
+		xpPaid  = cleanStringSet(record.xpPaid),
+	}
+end
+
 -- Repairs `data` in place. Returns a list of human-readable notes about
 -- anything that was changed (for the Output log); empty if all was well.
 function SaveData.Sanitize(data: any): { string }
@@ -198,6 +248,26 @@ function SaveData.Sanitize(data: any): { string }
 	end
 	data.dropped   = {}
 	data.inventory = cleaned
+
+	-- Cars: keep well-formed records only, and an activeCarId that exists.
+	local cars: { [string]: CarRecord } = {}
+	if type(data.cars) == "table" then
+		for id, record in pairs(data.cars) do
+			local clean = cleanCar(id, record)
+			if clean then
+				cars[clean.id] = clean
+			else
+				table.insert(notes, "car " .. tostring(id) .. " dropped (malformed)")
+			end
+		end
+	end
+	data.cars = cars
+	if type(data.activeCarId) ~= "string" or cars[data.activeCarId] == nil then
+		if data.activeCarId ~= nil then
+			table.insert(notes, "activeCarId cleared (no such car)")
+		end
+		data.activeCarId = nil
+	end
 
 	return notes
 end

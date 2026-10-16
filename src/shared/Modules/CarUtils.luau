@@ -12,13 +12,13 @@
 
     CarService (server) gives every car:
     - a "CarId" attribute (unique, so identical copies are still different
-      cars) and the "Car" tag
-    - an "OwnerUserId" attribute while a player has claimed it
+      cars; a player's saved car keeps its id every session) and the "Car" tag
+    - an "OwnerUserId" attribute on a player's own car
 
-    Parts in the inventory remember the carId they came from. They only go
-    back into that car — except when that car no longer exists in this
-    server (e.g. after a restart, until cars are saved), when they fit any
-    car with the same engine, so nothing is ever stuck.
+    Parts in the inventory remember the carId they came from and only go
+    back into that car. Parts from before car ids (no carId), or from a car
+    that isn't in this server, fit any car with the same engine, so nothing
+    is ever stuck.
 ]]
 
 local CollectionService = game:GetService("CollectionService")
@@ -42,7 +42,7 @@ function CarUtils.GetCarId(instance: Instance): string?
 	return if type(id) == "string" and id ~= "" then id else nil
 end
 
--- UserId of the player who has claimed the car, or nil if nobody has.
+-- UserId of the player who owns the car, or nil if nobody does.
 function CarUtils.GetOwnerUserId(instance: Instance): number?
 	local owner = CarUtils.GetCar(instance):GetAttribute(CarUtils.OWNER_ATTRIBUTE)
 	return if type(owner) == "number" then owner else nil
@@ -62,7 +62,7 @@ function CarUtils.FindCarById(carId: string): Instance?
 	return nil
 end
 
--- The car this player has claimed, or nil (one car per player).
+-- The car this player owns in the world right now, or nil.
 function CarUtils.FindCarOwnedBy(userId: number): Instance?
 	for _, car in ipairs(CollectionService:GetTagged(CarUtils.TAG)) do
 		if car:GetAttribute(CarUtils.OWNER_ATTRIBUTE) == userId and car:IsDescendantOf(Workspace) then

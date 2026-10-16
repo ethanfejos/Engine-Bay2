@@ -26,6 +26,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 -- "ProfileService" so every ProfileService.GetProfile(...) call below is
 -- unchanged.
 local ProfileService = require(script.Parent.Parent.Modules.ProfileManager)
+local CarService     = require(script.Parent.CarService)
 local ZoneUtils      = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 local CarUtils       = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("CarUtils"))
 local PartRules      = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("PartRules"))
@@ -227,8 +228,9 @@ reinstallEvent.OnServerEvent:Connect(function(player, itemId)
 	-- Fire reinstall animation to client
 	partReinstalledEvent:FireClient(player, clone)
 
-	-- Remove from inventory by id
+	-- Remove from inventory by id, and save the car with the part back in
 	InventoryService.RemovePart(player, itemId)
+	CarService.RecordChange(engine)
 end)
 
 clearInventory.OnServerEvent:Connect(function(player)

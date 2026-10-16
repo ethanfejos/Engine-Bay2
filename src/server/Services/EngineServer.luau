@@ -28,6 +28,7 @@ local HttpService         = game:GetService("HttpService")
 
 local LevelService      = require(script.Parent.LevelService)
 local PartPickupService = require(script.Parent.PartPickupService)
+local CarService        = require(script.Parent.CarService)
 local ProfileManager    = require(script.Parent.Parent.Modules.ProfileManager)
 local ZoneUtils         = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 local PartRules         = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("PartRules"))
@@ -175,6 +176,7 @@ removeEvent.OnServerEvent:Connect(function(player, model)
 		task.delay(REMOVE_ANIM_DELAY, function()
 			if model.Parent then
 				model:Destroy()
+				CarService.RecordChange(engine) -- the save matches the car straight away
 			end
 		end)
 		return
@@ -252,6 +254,7 @@ removeEvent.OnServerEvent:Connect(function(player, model)
 			removing[model] = nil
 			return
 		end
+		CarService.RecordChange(engine) -- the save matches the car straight away
 
 		if not removalXpAlreadyPaid then
 			LevelService.AddXP(player, LevelService.XP_AWARDS.remove, "remove")

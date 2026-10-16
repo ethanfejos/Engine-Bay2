@@ -37,8 +37,11 @@ local ANIMATE_DISTANCE = 60    -- studs from the camera
 
 -- ── Prompt visibility ─────────────────────────────────────────────────────────
 
+-- A drop with no owner tag is treated as visible to everyone, so a missing
+-- attribute can never hide a prompt (the server still checks the owner).
 local function isMine(model)
-	return model:GetAttribute("OwnerUserId") == player.UserId
+	local owner = model:GetAttribute("OwnerUserId")
+	return owner == nil or owner == player.UserId
 end
 
 local function updatePrompt(model)

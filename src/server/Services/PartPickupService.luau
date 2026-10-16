@@ -21,6 +21,11 @@
       players' screens using the OwnerUserId attribute); the server also
       checks the owner when it's triggered.
 
+    Saved straight away: the moment a part drops it's written into the
+    owner's save (profile.Data.dropped), and moved to the inventory when
+    picked up. If a server crashes before pickup, the part is recovered into
+    the inventory on the player's next join (SaveData.Sanitize).
+
     Safety nets, so a part can never be lost:
     - Leaving the bay (or dying in it) auto-collects your drops there.
     - Leaving the game auto-collects them too, via
@@ -63,7 +68,7 @@ local FLOOR_TOLERANCE    = 1     -- studs a "floor" may sit above the car's lowe
 local RAY_DEPTH          = 40    -- studs below the car the floor search goes
 
 local PROMPT_KEY         = Enum.KeyCode.F -- not E: that's the engine-bay prompt
-local PROMPT_DISTANCE    = 6
+local PROMPT_DISTANCE    = 8
 local MIN_TRIGGER_SIZE   = 1.5
 
 -- Instances a dropped copy must not keep: anything that runs, interacts or
@@ -246,6 +251,32 @@ local function placeDrop(dropClone, sourceModel, zoneName)
 	return cframeAt(x, z, floorY), index
 end
 
+-- ── Saved record of a drop ────────────────────────────────────────────────────
+
+local function itemRecord(itemId, drop)
+	return {
+		id           = itemId,
+		name         = drop.modelName,
+		wear         = drop.wear,
+		engineName   = drop.engineName,
+		relativeData = drop.relativeData,
+	}
+end
+
+local function saveDropped(player, itemId, drop)
+	local profile = ProfileManager.GetProfile(player)
+	if profile then
+		profile.Data.dropped[itemId] = itemRecord(itemId, drop)
+	end
+end
+
+local function forgetDropped(player, itemId)
+	local profile = ProfileManager.GetProfile(player)
+	if profile then
+		profile.Data.dropped[itemId] = nil
+	end
+end
+
 -- ── Collecting ────────────────────────────────────────────────────────────────
 
 -- Moves a dropped part into its owner's inventory and removes it from the
@@ -257,7 +288,10 @@ function PartPickupService.CollectPart(itemId)
 	droppedParts[itemId] = nil
 	releaseSlot(drop.zoneName, drop.slotIndex)
 
+	-- Into the inventory first, then off the saved "on the floor" list, so
+	-- there's never a moment where the save has the part in neither.
 	InventoryService.AddPart(drop.player, drop.modelName, drop.wear, drop.engineName, drop.relativeData, itemId)
+	forgetDropped(drop.player, itemId)
 
 	if drop.instance and drop.instance.Parent then
 		drop.instance:Destroy()
@@ -314,6 +348,7 @@ function PartPickupService.DropPart(player, sourceModel, modelName, wear, engine
 		instance     = dropClone,
 		slotIndex    = slotIndex,
 	}
+	saveDropped(player, itemId, droppedParts[itemId])
 
 	prompt.Triggered:Connect(function(triggeringPlayer)
 		-- Only the player who removed it can pick it up (the prompt is
@@ -342,13 +377,8 @@ end)
 ProfileManager.OnBeforeRelease(function(player, profile)
 	for itemId, drop in pairs(droppedParts) do
 		if drop.player == player then
-			table.insert(profile.Data.inventory, {
-				id           = itemId,
-				name         = drop.modelName,
-				wear         = drop.wear,
-				engineName   = drop.engineName,
-				relativeData = drop.relativeData,
-			})
+			table.insert(profile.Data.inventory, itemRecord(itemId, drop))
+			profile.Data.dropped[itemId] = nil
 			if drop.instance and drop.instance.Parent then
 				drop.instance:Destroy()
 			end

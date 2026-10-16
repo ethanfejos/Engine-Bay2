@@ -38,7 +38,12 @@ local function createPromptUI(prompt)
 	billboard.AlwaysOnTop = true
 	billboard.Size        = UDim2.new(0, 250, 0, 80)
 	billboard.Adornee     = prompt.Parent
-	billboard.MaxDistance = prompt.MaxActivationDistance or 15
+	-- No distance limit here: a BillboardGui's MaxDistance is measured from
+	-- the CAMERA, so using the prompt's (character-based) reach hid prompts
+	-- whenever the camera sat further back than that. Roblox already only
+	-- shows the prompt (PromptShown/PromptHidden) when the character is
+	-- in range.
+	billboard.MaxDistance = math.huge
 	billboard.Active      = true
 	billboard.Parent      = playerGui
 

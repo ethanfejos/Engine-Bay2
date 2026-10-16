@@ -57,6 +57,11 @@ function InventoryService.AddPart(player, partName, wear, engineName, relativeDa
 	local profile = ProfileService.GetProfile(player)
 	if not profile then return end
 
+	-- Never hold the same part twice (e.g. a pickup racing a recovery).
+	for _, existing in ipairs(profile.Data.inventory) do
+		if existing.id == itemId then return end
+	end
+
 	table.insert(profile.Data.inventory, {
 		id           = itemId,
 		name         = partName,

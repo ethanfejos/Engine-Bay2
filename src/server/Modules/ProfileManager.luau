@@ -19,24 +19,20 @@
 
     Uses the same DataStore name and "Player_<UserId>" key format as the
     previous ProfileService.luau, so existing saved data still loads.
+
+    Every load runs SaveData's migrations, ProfileService's Reconcile, and
+    SaveData's repair step (bad entries fixed or dropped, parts left on the
+    floor by a crashed server recovered) — see SaveData.
 ]]
 
 local Players = game:GetService("Players")
 local ProfileService = require(script.Parent:WaitForChild("ProfileService"))
+local SaveData       = require(script.Parent:WaitForChild("SaveData"))
 
 local DATASTORE_NAME = "EngineInventory_v1"
 
--- Same shape as the old ProfileService.luau's DEFAULT_DATA, plus xp/level
--- tracking, a record of which parts have already paid out inspect XP
--- (so re-inspecting a reinstalled part doesn't farm XP repeatedly), and a
--- basic money balance. 100,000 is a testing-phase starting balance, not a
--- tuned economy number — see MoneyService.
-local PROFILE_TEMPLATE = {
-	inventory = {}, -- list of { id, name, wear, engineName, relativeData }
-	xp = 0,
-	inspectedForXp = {}, -- set of "engineName:partName" -> true
-	money = 100000,
-}
+-- The save's shape, migrations and repair rules live in SaveData.
+local PROFILE_TEMPLATE = SaveData.TEMPLATE
 
 local ProfileStore = ProfileService.GetProfileStore(DATASTORE_NAME, PROFILE_TEMPLATE)
 
@@ -106,7 +102,17 @@ function ProfileManager._loadProfile(player)
 	end
 
 	profile:AddUserId(player.UserId) -- GDPR: associates save data with the user for data requests
-	profile:Reconcile() -- fills in any keys missing from an older save (e.g. new fields added later)
+
+	-- Bring the save up to date, in this order (see SaveData):
+	-- migrations BEFORE Reconcile, or Reconcile would stamp an old save
+	-- with the current version and its migrations would never run.
+	local migrated = SaveData.Migrate(profile.Data)
+	profile:Reconcile() -- adds any fields the save is missing
+	local notes = SaveData.Sanitize(profile.Data)
+	if migrated > 0 or #notes > 0 then
+		warn(("[ProfileManager] %s: ran %d migration(s); %s"):format(
+			player.Name, migrated, #notes > 0 and table.concat(notes, "; ") or "no repairs"))
+	end
 
 	profile:ListenToRelease(function()
 		profiles[player] = nil

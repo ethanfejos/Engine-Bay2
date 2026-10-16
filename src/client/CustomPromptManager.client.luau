@@ -1,14 +1,23 @@
 --[[
     CustomPromptManager (LocalScript)
-    ----------------------------------
-    What it is: Custom UI system for ProximityPrompts.
-    
-    Fixed: Unnested functions from resetFill() and resolved syntax closures.
+    ---------------------------------
+    Draws every ProximityPrompt whose Style is Custom: a key tile with a
+    fill that shows hold progress, and the action text beside it.
+
+    Works with keyboard and mouse:
+    - Pressing the prompt's key is handled by Roblox itself; this only
+      animates the fill from the prompt's own hold events.
+    - Clicking the drawn prompt calls InputHoldBegin on press and
+      InputHoldEnd on release (or when the mouse leaves it), which is how
+      Roblox expects a custom prompt to be driven — Roblox then applies
+      HoldDuration and fires Triggered itself.
+
+    Used by: the dropped-part Pick Up prompt (F) and any other prompt set
+    to the Custom style.
 ]]
 
 local ProximityPromptService = game:GetService("ProximityPromptService")
 local TweenService           = game:GetService("TweenService")
-local UserInputService       = game:GetService("UserInputService")
 local Players                = game:GetService("Players")
 
 local player    = Players.LocalPlayer
@@ -109,79 +118,50 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
 	if prompt.Style ~= Enum.ProximityPromptStyle.Custom then return end
 
 	local gui, btn, keyFill = createPromptUI(prompt)
-	local holdTween    = nil
-	local holding      = false
-	local holdThread   = nil
-	local connections  = {}
-
-	local function disconnectAll()
-		for _, c in ipairs(connections) do c:Disconnect() end
-		table.clear(connections)
-	end
+	local holdTween   = nil
+	local mouseDown   = false -- this prompt is being held with the mouse
+	local connections = {}
 
 	local function resetFill()
 		if holdTween then
 			holdTween:Cancel()
 			holdTween = nil
 		end
-		if holdThread then
-			task.cancel(holdThread)
-			holdThread = nil
-		end
-		holding = false
-		local resetTween = TweenService:Create(keyFill, TWEEN_FILL_OUT, { Size = UDim2.new(1, 0, 0, 0) })
-		resetTween:Play()
+		TweenService:Create(keyFill, TWEEN_FILL_OUT, { Size = UDim2.new(1, 0, 0, 0) }):Play()
 	end
 
-	local function beginHold()
-		if holding then return end
-		holding = true
-
-		-- Animate fill
-		if holdTween then holdTween:Cancel() end
-		local info = TweenInfo.new(prompt.HoldDuration, Enum.EasingStyle.Linear)
-		holdTween = TweenService:Create(keyFill, info, { Size = UDim2.new(1, 0, 1, 0) })
-		holdTween:Play()
-
-		-- Safely handle instant clicks vs duration holds
-		if prompt.HoldDuration <= 0 then
-			prompt:InputHoldEnd()
-			resetFill()
-		else
-			holdThread = task.delay(prompt.HoldDuration, function()
-				if holding then
-					prompt:InputHoldEnd()
-					resetFill()
-				end
-			end)
-		end
+	-- Mouse: drive the prompt the way Roblox expects for custom prompts.
+	local function mouseRelease()
+		if not mouseDown then return end
+		mouseDown = false
+		prompt:InputHoldEnd()
 	end
 
-	local function endHold()
-		if not holding then return end
-		resetFill()
-	end
+	table.insert(connections, btn.MouseButton1Down:Connect(function()
+		if mouseDown or not prompt.Enabled then return end
+		mouseDown = true
+		prompt:InputHoldBegin()
+	end))
+	table.insert(connections, btn.MouseButton1Up:Connect(mouseRelease))
+	table.insert(connections, btn.MouseLeave:Connect(mouseRelease))
 
-	-- Mouse click / hold support
-	table.insert(connections, btn.MouseButton1Down:Connect(beginHold))
-	table.insert(connections, btn.MouseButton1Up:Connect(endHold))
-
-	-- Keyboard hold support via existing prompt events
+	-- Fill animation, for both key and mouse holds (Roblox fires these for
+	-- prompts with a HoldDuration above 0).
 	table.insert(connections, prompt.PromptButtonHoldBegan:Connect(function()
 		if holdTween then holdTween:Cancel() end
-		local info = TweenInfo.new(prompt.HoldDuration, Enum.EasingStyle.Linear)
-		holdTween = TweenService:Create(keyFill, info, { Size = UDim2.new(1, 0, 1, 0) })
+		holdTween = TweenService:Create(keyFill,
+			TweenInfo.new(prompt.HoldDuration, Enum.EasingStyle.Linear),
+			{ Size = UDim2.new(1, 0, 1, 0) })
 		holdTween:Play()
 	end))
+	table.insert(connections, prompt.PromptButtonHoldEnded:Connect(resetFill))
+	table.insert(connections, prompt.Triggered:Connect(resetFill))
 
-	table.insert(connections, prompt.PromptButtonHoldEnded:Connect(function()
-		resetFill()
-	end))
-
-	-- Cleanup on hide
+	-- Cleanup when the prompt goes away (walked off, disabled, destroyed).
 	table.insert(connections, prompt.PromptHidden:Connect(function()
-		disconnectAll()
-		resetFill()
+		mouseRelease()
+		for _, c in ipairs(connections) do c:Disconnect() end
+		table.clear(connections)
 		gui:Destroy()
 	end))
 end)

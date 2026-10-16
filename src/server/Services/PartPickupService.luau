@@ -1,109 +1,196 @@
 --[[
     PartPickupService (ModuleScript)
-    ---------------------------------
-    Removed engine parts don't go straight into inventory — they drop as a
-    physical, anchored object near where they were removed, and the player
-    has to interact with it (Pick Up prompt) to actually claim it.
+    --------------------------------
+    Removed engine parts don't go straight into the inventory: a visual copy
+    drops on the floor beside the car, and the player who removed it picks
+    it up with a prompt ([F] Pick Up · "Alternator · 34%").
 
-    Safety nets, so a part can never be permanently lost:
-    - Leaving the zone the part is sitting in auto-collects it.
-    - Leaving the game entirely auto-collects it too, via
-      ProfileManager.OnBeforeRelease — NOT a second PlayerRemoving
-      connection, since connection order between separate scripts isn't
-      something to rely on and could otherwise write into an
-      already-released profile.
+    Where a drop lands:
+    - In a spiral of spots around the car's footprint (golden angle), so
+      several drops spread out instead of stacking.
+    - Each spot is checked before use: the real floor is found by raycasting
+      down (so a car on a hoist or an engine on a stand doesn't make parts
+      float), the spot must be clear of anything solid (walls, benches) and
+      inside the player's bay. Blocked spots are skipped. If no spot passes
+      within MAX_SPOT_TRIES, the first free spot is used anyway.
 
-    Required by EngineServer, which calls DropPart right after destroying a
-    removed part.
+    The prompt:
+    - Uses the custom prompt style (drawn by CustomPromptManager) and the F
+      key, so it never competes with the engine-bay prompt on E.
+    - Is shown only to the owner (DroppedPartEffect hides it on other
+      players' screens using the OwnerUserId attribute); the server also
+      checks the owner when it's triggered.
 
-    Place in: ServerScriptService/Services
+    Safety nets, so a part can never be lost:
+    - Leaving the bay (or dying in it) auto-collects your drops there.
+    - Leaving the game auto-collects them too, via
+      ProfileManager.OnBeforeRelease — not a second PlayerRemoving
+      connection, whose order relative to the profile release isn't
+      guaranteed.
+
+    Called by EngineServer (DropPart) right before it destroys the removed
+    part.
 ]]
 
-local Workspace            = game:GetService("Workspace")
-local ServerScriptService  = game:GetService("ServerScriptService")
+local Workspace           = game:GetService("Workspace")
+local Players             = game:GetService("Players")
+local ReplicatedStorage   = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local InventoryService = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Services"):WaitForChild("InventoryService"))
-local ProfileManager    = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Modules"):WaitForChild("ProfileManager"))
-local ZoneUtils         = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
+local ProfileManager   = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Modules"):WaitForChild("ProfileManager"))
+local ZoneUtils        = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 
 local zoneEventsFolder = ServerScriptService:WaitForChild("Server"):WaitForChild("Services"):WaitForChild("ZoneServiceEvents")
-local PlayerLeftZone    = zoneEventsFolder:WaitForChild("PlayerLeftZone")
+local PlayerLeftZone   = zoneEventsFolder:WaitForChild("PlayerLeftZone")
 
 local droppedFolder = Workspace:FindFirstChild("DroppedParts")
 if not droppedFolder then
-	droppedFolder = Instance.new("Folder")
-	droppedFolder.Name = "DroppedParts"
+	droppedFolder        = Instance.new("Folder")
+	droppedFolder.Name   = "DroppedParts"
 	droppedFolder.Parent = Workspace
 end
 
--- [itemId] = { player, modelName, wear, engineName, relativeData, zoneName, instance }
+-- ── Config ────────────────────────────────────────────────────────────────────
+
+local DROP_CLEARANCE     = 2     -- studs clear of the car's footprint
+local GROUND_CLEARANCE   = 0.05  -- tiny gap so the part doesn't z-fight with the floor
+local SPREAD_RING_RADIUS = 1.6   -- studs of extra spread per ring of the spiral
+local GOLDEN_ANGLE       = math.rad(137.5)
+local MAX_SPOT_TRIES     = 24    -- spots checked before falling back
+local CLEAR_SHRINK       = 0.9   -- clearance box is 90% of the part, so touching a wall isn't "blocked"
+local FLOOR_TOLERANCE    = 1     -- studs a "floor" may sit above the car's lowest point (rejects walls/shelves)
+local RAY_DEPTH          = 40    -- studs below the car the floor search goes
+
+local PROMPT_KEY         = Enum.KeyCode.F -- not E: that's the engine-bay prompt
+local PROMPT_DISTANCE    = 6
+local MIN_TRIGGER_SIZE   = 1.5
+
+-- Instances a dropped copy must not keep: anything that runs, interacts or
+-- joins it to the car it came from. It's purely visual.
+local STRIP_CLASSES = {
+	"Script", "LocalScript", "ModuleScript",
+	"ProximityPrompt", "ClickDetector", "BillboardGui", "SurfaceGui",
+	"JointInstance", "WeldConstraint", "NoCollisionConstraint", "Constraint",
+}
+
+-- ── State ─────────────────────────────────────────────────────────────────────
+
+-- [itemId] = { player, modelName, wear, engineName, relativeData, zoneName, instance, slotIndex }
 local droppedParts = {}
 
-local DROP_CLEARANCE   = 2 -- studs clear of the engine/car's own footprint, past its bounding box edge
-local GROUND_CLEARANCE = 0.05 -- tiny gap so the part doesn't z-fight with the ground
-
--- Multiple parts dropped near the same engine/car are spread out in a loose
--- spiral (golden-angle, like seed packing) running all the way AROUND it,
--- not just to one fixed side — each later slot in the same bay rings
--- further out. Starting the index at 1 (not 0) means the very first part
--- lands right at the clearance radius instead of dead-center on top of it.
-local SPREAD_RING_RADIUS = 1.6 -- studs of extra spread per ring of the spiral
-local GOLDEN_ANGLE       = math.rad(137.5)
+-- [zoneName] = { [slotIndex] = true } — spiral spots in use per bay, so a
+-- freed spot (part collected) gets reused.
+local activeSlotsByZone = {}
 
 local PartPickupService = {}
 
--- [zoneName] = { [slotIndex] = true }, tracks which spiral slots around a
--- given bay's drop point are currently occupied, so a freed slot (part
--- collected) gets reused rather than the spiral only ever growing outward.
-local activeSlotsByZone = {}
+-- ── Helpers ───────────────────────────────────────────────────────────────────
 
-local function claimSlot(zoneName)
+local function slotsFor(zoneName)
 	local slots = activeSlotsByZone[zoneName]
 	if not slots then
 		slots = {}
 		activeSlotsByZone[zoneName] = slots
 	end
-	local index = 1
-	while slots[index] do
-		index += 1
-	end
-	slots[index] = true
-	return index
+	return slots
 end
 
 local function releaseSlot(zoneName, slotIndex)
 	local slots = activeSlotsByZone[zoneName]
-	if slots then
+	if slots and slotIndex then
 		slots[slotIndex] = nil
 	end
 end
 
--- Placed in a ring around the engine/car's own footprint, at ground height
--- — not near the removed part's own position, which is inside the body (or
--- up on the hoist) and invisible until you leave engine-view camera.
---
--- Also gives each drop a random yaw and a chance to land tipped onto its
--- side, so a pile of parts doesn't look like a row of parts all standing
--- perfectly upright. "Ground height" is measured using dropClone's OWN
--- bounding box at that final orientation (not a flat guess based on the
--- car), so a small bolt and a big body panel both actually rest on the
--- ground instead of floating above it or sinking into it.
-local function getDropCFrame(dropClone, sourceModel, zoneName, slotIndex)
+local function shouldStrip(inst)
+	for _, className in ipairs(STRIP_CLASSES) do
+		if inst:IsA(className) then return true end
+	end
+	return false
+end
+
+local function clearAttributes(inst)
+	for name in pairs(inst:GetAttributes()) do
+		inst:SetAttribute(name, nil)
+	end
+end
+
+-- Turns a clone of an engine part into a plain visual: no attributes (so
+-- nothing treats it as an engine part), no scripts/prompts/GUIs, no joints,
+-- anchored and non-collidable.
+local function makeVisualCopy(sourceModel)
+	local copy = sourceModel:Clone()
+	clearAttributes(copy)
+	for _, inst in ipairs(copy:GetDescendants()) do
+		if shouldStrip(inst) then
+			inst:Destroy()
+		elseif inst.Parent then
+			clearAttributes(inst)
+			if inst:IsA("BasePart") then
+				inst.Anchored   = true
+				inst.CanCollide = false
+				inst.CanQuery   = false
+				inst.CanTouch   = false
+			end
+		end
+	end
+	return copy
+end
+
+-- Everything the floor and clearance checks should ignore.
+local function ignoreList(carRoot)
+	local list = { carRoot, droppedFolder }
+	local zones = Workspace:FindFirstChild("EngineZones")
+	if zones then table.insert(list, zones) end
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p.Character then table.insert(list, p.Character) end
+	end
+	return list
+end
+
+-- Is a world position inside the zone's footprint (ignoring height, since
+-- bay volumes don't always reach exactly to the floor)?
+local function insideBayFootprint(position, zone)
+	local localPos = zone.CFrame:PointToObjectSpace(position)
+	return math.abs(localPos.X) <= zone.Size.X / 2
+		and math.abs(localPos.Z) <= zone.Size.Z / 2
+end
+
+-- Height of the real floor below (x, z), or nil if there's none, or if what
+-- was hit sits too high to be the floor (a wall top, a shelf).
+local function findFloorY(x, z, carTopY, carBottomY, rayParams)
+	local origin = Vector3.new(x, carTopY + 2, z)
+	local result = Workspace:Raycast(origin, Vector3.new(0, -((carTopY - carBottomY) + 2 + RAY_DEPTH), 0), rayParams)
+	if not result then return nil end
+	if result.Position.Y > carBottomY + FLOOR_TOLERANCE then return nil end
+	return result.Position.Y
+end
+
+-- Picks a spot and orientation for `dropClone` around the car. Returns the
+-- CFrame and the claimed spiral slot index.
+local function placeDrop(dropClone, sourceModel, zoneName)
 	local carRoot = ZoneUtils.GetTopLevelAncestor(sourceModel)
 	local carCFrame, carSize = carRoot:GetBoundingBox()
-	local groundY = carCFrame.Position.Y - carSize.Y / 2
-
-	-- Radius clear of the whole footprint's horizontal extent (its bounding
-	-- box's half-diagonal), so parts never spawn inside the engine/car/hoist
-	-- regardless of which way they're facing.
+	local carBottomY = carCFrame.Position.Y - carSize.Y / 2
+	local carTopY    = carCFrame.Position.Y + carSize.Y / 2
 	local footprintRadius = math.sqrt(carSize.X ^ 2 + carSize.Z ^ 2) / 2 + DROP_CLEARANCE
 
-	local angle  = slotIndex * GOLDEN_ANGLE
-	local radius = footprintRadius + SPREAD_RING_RADIUS * math.sqrt(slotIndex - 1)
-	local spreadOffset = Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
+	local zonesFolder = Workspace:FindFirstChild("EngineZones")
+	local zone = zonesFolder and zonesFolder:FindFirstChild(zoneName)
 
-	local horizontal = Vector3.new(carCFrame.Position.X, 0, carCFrame.Position.Z) + spreadOffset
+	local ignore = ignoreList(carRoot)
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType                 = Enum.RaycastFilterType.Exclude
+	rayParams.FilterDescendantsInstances = ignore
+	rayParams.RespectCanCollide          = true
+	local overlapParams = OverlapParams.new()
+	overlapParams.FilterType                 = Enum.RaycastFilterType.Exclude
+	overlapParams.FilterDescendantsInstances = ignore
+	overlapParams.RespectCanCollide          = true
 
+	-- Random resting pose (yaw, maybe tipped on its side), measured once:
+	-- how far the part's bounds centre sits from its pivot in that pose.
 	local yaw  = math.random() * math.pi * 2
 	local tilt = CFrame.new()
 	if math.random() < 0.5 then
@@ -111,23 +198,59 @@ local function getDropCFrame(dropClone, sourceModel, zoneName, slotIndex)
 		tilt = CFrame.fromAxisAngle(axis, math.rad(90))
 	end
 	local orientation = CFrame.Angles(0, yaw, 0) * tilt
-
-	-- Measure the clone's own bounding box at this orientation (position
-	-- doesn't matter yet) so we know how far its lowest point sits below
-	-- its pivot once tipped/rotated.
 	dropClone:PivotTo(orientation)
 	local boundsCFrame, boundsSize = dropClone:GetBoundingBox()
-	local pivotToBoundsCenterY = boundsCFrame.Position.Y -- relative to pivot at Y=0
-	local desiredBoundsCenterY = groundY + boundsSize.Y / 2 + GROUND_CLEARANCE
-	local pivotY = desiredBoundsCenterY - pivotToBoundsCenterY
+	local pivotToCentre = boundsCFrame.Position -- pivot is at the origin here
 
-	return CFrame.new(horizontal.X, pivotY, horizontal.Z) * orientation
+	local function spotFor(index)
+		local angle  = index * GOLDEN_ANGLE
+		local radius = footprintRadius + SPREAD_RING_RADIUS * math.sqrt(index - 1)
+		return carCFrame.Position.X + math.cos(angle) * radius,
+			carCFrame.Position.Z + math.sin(angle) * radius
+	end
+
+	local function cframeAt(x, z, floorY)
+		local centreY = floorY + boundsSize.Y / 2 + GROUND_CLEARANCE
+		return CFrame.new(x - pivotToCentre.X, centreY - pivotToCentre.Y, z - pivotToCentre.Z) * orientation
+	end
+
+	local slots     = slotsFor(zoneName)
+	local firstFree = nil
+	local tried     = 0
+	local index     = 1
+	while tried < MAX_SPOT_TRIES do
+		if not slots[index] then
+			tried += 1
+			firstFree = firstFree or index
+
+			local x, z = spotFor(index)
+			local floorY = findFloorY(x, z, carTopY, carBottomY, rayParams)
+			if floorY then
+				local centre = Vector3.new(x, floorY + boundsSize.Y / 2 + GROUND_CLEARANCE, z)
+				local inBay  = (zone == nil) or insideBayFootprint(centre, zone)
+				local clear  = #Workspace:GetPartBoundsInBox(CFrame.new(centre), boundsSize * CLEAR_SHRINK, overlapParams) == 0
+				if inBay and clear then
+					slots[index] = true
+					return cframeAt(x, z, floorY), index
+				end
+			end
+		end
+		index += 1
+	end
+
+	-- Nothing passed: use the first free spot, on the real floor if found.
+	index = firstFree or index
+	slots[index] = true
+	local x, z = spotFor(index)
+	local floorY = findFloorY(x, z, carTopY, carBottomY, rayParams) or carBottomY
+	return cframeAt(x, z, floorY), index
 end
 
--- Actually adds the part to its owner's inventory and removes the dropped
--- object from the world. Safe to call more than once for the same itemId —
--- the zone-leave and game-leave safety nets can both race to collect the
--- same part, and only the first should do anything.
+-- ── Collecting ────────────────────────────────────────────────────────────────
+
+-- Moves a dropped part into its owner's inventory and removes it from the
+-- world. Safe to call more than once for the same itemId — the safety nets
+-- can race to collect the same part; only the first does anything.
 function PartPickupService.CollectPart(itemId)
 	local drop = droppedParts[itemId]
 	if not drop then return end
@@ -141,62 +264,43 @@ function PartPickupService.CollectPart(itemId)
 	end
 end
 
--- Called by EngineServer right after a part is removed from an engine.
--- sourceModel is the removed model itself, still valid and not yet
--- destroyed, so its appearance/position can be reused for the dropped clone.
+-- ── Dropping ──────────────────────────────────────────────────────────────────
+
+-- Called by EngineServer while the removed part still exists, so its look
+-- and position can be copied.
 function PartPickupService.DropPart(player, sourceModel, modelName, wear, engineName, relativeData, itemId, zoneName)
-	local dropClone = sourceModel:Clone()
-	dropClone.Name = modelName
+	local dropClone = makeVisualCopy(sourceModel)
+	dropClone.Name  = modelName
+	dropClone:SetAttribute("OwnerUserId", player.UserId)
 
-	-- Strip anything that tried to weld this to the engine it just came out
-	-- of — that engine (or its other parts) may not exist by the time this
-	-- clone is parented in.
-	for _, inst in ipairs(dropClone:GetDescendants()) do
-		if inst:IsA("JointInstance") then
-			inst:Destroy()
-		end
-	end
-
-	-- A dropped part is a pickup, not an engine part: remove the attributes
-	-- that make EngineContext, the Wrench and the inspection tool treat it as
-	-- one (hovering it in engine view used to target it).
-	local function stripPartAttributes(inst)
-		inst:SetAttribute("Inspectable", nil)
-		inst:SetAttribute("IsBolt", nil)
-	end
-	stripPartAttributes(dropClone)
-	for _, inst in ipairs(dropClone:GetDescendants()) do
-		stripPartAttributes(inst)
-	end
-
-	-- Fixed spot, no physics, per design: anchored, non-collidable so it
-	-- can't block movement in a tight engine bay.
-	for _, part in ipairs(dropClone:GetDescendants()) do
-		if part:IsA("BasePart") then
-			part.Anchored   = true
-			part.CanCollide = false
-		end
-	end
-
-	local slotIndex = claimSlot(zoneName)
-	local dropCFrame = getDropCFrame(dropClone, sourceModel, zoneName, slotIndex)
+	local dropCFrame, slotIndex = placeDrop(dropClone, sourceModel, zoneName)
 	dropClone:PivotTo(dropCFrame)
 
-	local trigger         = Instance.new("Part")
-	trigger.Name          = "PickupTrigger"
-	trigger.Size          = Vector3.new(3, 3, 3)
-	trigger.Transparency  = 1
-	trigger.CanCollide    = false
-	trigger.Anchored      = true
-	trigger.CFrame        = dropCFrame
-	trigger.Parent        = dropClone
+	-- Invisible trigger at the part's centre, sized to it, holding the prompt.
+	local boundsCFrame, boundsSize = dropClone:GetBoundingBox()
+	local trigger        = Instance.new("Part")
+	trigger.Name         = "PickupTrigger"
+	trigger.Size         = Vector3.new(
+		math.max(boundsSize.X, MIN_TRIGGER_SIZE),
+		math.max(boundsSize.Y, MIN_TRIGGER_SIZE),
+		math.max(boundsSize.Z, MIN_TRIGGER_SIZE))
+	trigger.CFrame       = boundsCFrame
+	trigger.Transparency = 1
+	trigger.Anchored     = true
+	trigger.CanCollide   = false
+	trigger.CanQuery     = false
+	trigger.CanTouch     = false
+	trigger.Parent       = dropClone
 
-	local prompt                  = Instance.new("ProximityPrompt")
-	prompt.ActionText              = "Pick Up"
-	prompt.ObjectText               = modelName
-	prompt.HoldDuration             = 0
-	prompt.MaxActivationDistance    = 8
-	prompt.Parent                   = trigger
+	local prompt                 = Instance.new("ProximityPrompt")
+	prompt.ActionText            = "Pick Up"
+	prompt.ObjectText            = string.format("%s · %d%%", modelName, math.floor(tonumber(wear) or 0))
+	prompt.KeyboardKeyCode       = PROMPT_KEY
+	prompt.Style                 = Enum.ProximityPromptStyle.Custom
+	prompt.HoldDuration          = 0
+	prompt.MaxActivationDistance = PROMPT_DISTANCE
+	prompt.RequiresLineOfSight   = false
+	prompt.Parent                = trigger
 
 	dropClone.Parent = droppedFolder
 
@@ -212,7 +316,8 @@ function PartPickupService.DropPart(player, sourceModel, modelName, wear, engine
 	}
 
 	prompt.Triggered:Connect(function(triggeringPlayer)
-		-- Only the player who removed it can pick it up.
+		-- Only the player who removed it can pick it up (the prompt is
+		-- hidden for everyone else, but never trust the client for that).
 		local drop = droppedParts[itemId]
 		if drop and triggeringPlayer == drop.player then
 			PartPickupService.CollectPart(itemId)
@@ -220,9 +325,10 @@ function PartPickupService.DropPart(player, sourceModel, modelName, wear, engine
 	end)
 end
 
--- Safety net #1: leaving the zone a dropped part is sitting in auto-collects
--- it, so walking away doesn't strand it somewhere the player can't easily
--- get back to (especially once other players can use the same bay).
+-- ── Safety nets ───────────────────────────────────────────────────────────────
+
+-- Leaving the bay (or dying in it) collects your drops there, so they're
+-- never stranded where you can't easily get back to them.
 PlayerLeftZone.Event:Connect(function(player, zoneName)
 	for itemId, drop in pairs(droppedParts) do
 		if drop.player == player and drop.zoneName == zoneName then
@@ -231,10 +337,8 @@ PlayerLeftZone.Event:Connect(function(player, zoneName)
 	end
 end)
 
--- Safety net #2: leaving the game entirely. Writes directly into the
--- profile this callback is handed, since it runs before release/save —
--- NOT through InventoryService.AddPart's own GetProfile lookup, which
--- could return nil if this ever ran after release for any reason.
+-- Leaving the game: written straight into the profile this callback is
+-- handed (it runs just before the profile is released and saved).
 ProfileManager.OnBeforeRelease(function(player, profile)
 	for itemId, drop in pairs(droppedParts) do
 		if drop.player == player then

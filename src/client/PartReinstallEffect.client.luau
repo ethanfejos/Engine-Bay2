@@ -1,3 +1,4 @@
+--!strict
 --[[
     PartReinstallEffect (LocalScript)
     ----------------------------------
@@ -12,9 +13,8 @@
 local TweenService      = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local partReinstalledEvent = ReplicatedStorage
-	:WaitForChild("RemoteEvents")
-	:WaitForChild("PartReinstalled")
+local Remotes = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Remotes"))
+local partReinstalledEvent = Remotes.PartReinstalled
 
 -- ── Config ────────────────────────────────────────────────────────────────────
 
@@ -24,10 +24,10 @@ local TWEEN_INFO   = TweenInfo.new(DURATION, Enum.EasingStyle.Quad, Enum.EasingD
 
 -- ── Effect ────────────────────────────────────────────────────────────────────
 
-local function playReinstallEffect(model)
+local function playReinstallEffect(model: Instance)
 	if not model or not model.Parent then return end
 
-	local parts = {}
+	local parts: { BasePart } = {}
 	for _, desc in ipairs(model:GetDescendants()) do
 		if desc:IsA("BasePart") then
 			table.insert(parts, desc)
@@ -36,7 +36,7 @@ local function playReinstallEffect(model)
 	if #parts == 0 then return end
 
 	-- Store final positions then offset upward to start
-	local finalCFrames = {}
+	local finalCFrames: { [BasePart]: CFrame } = {}
 	for _, part in ipairs(parts) do
 		finalCFrames[part] = part.CFrame
 		part.CFrame        = part.CFrame + Vector3.new(0, FLOAT_HEIGHT, 0)
@@ -71,7 +71,7 @@ local function playReinstallEffect(model)
 
 	-- Fade in decals/textures
 	for _, desc in ipairs(model:GetDescendants()) do
-		if desc:IsA("Decal") or desc:IsA("Texture") then
+		if desc:IsA("Decal") then -- Textures are Decals too
 			desc.Transparency = 1
 			TweenService:Create(desc, TWEEN_INFO, { Transparency = 0 }):Play()
 		end

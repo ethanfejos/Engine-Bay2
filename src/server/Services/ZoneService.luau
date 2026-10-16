@@ -1,3 +1,4 @@
+--!strict
 --[[
     ZoneService (ModuleScript, started by Main)
     -------------------------------------------
@@ -31,7 +32,10 @@ local RunService        = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local ZoneUtils = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
-local Signal    = require(script.Parent.Parent.Modules.Signal)
+local Signal    = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Signal"))
+local Log       = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Log"))
+
+local log = Log.new("ZoneService")
 
 -- ── Config ────────────────────────────────────────────────────────────────────
 
@@ -51,17 +55,17 @@ local PlayerLeftZone    = ZoneService.PlayerLeftZone
 -- [player] = { name = zoneName, zoneType = zoneType } for the zone they're in.
 -- zoneType is stored so leave can still report it if the zone part was
 -- removed in the meantime.
-local playerZone = {}
+local playerZone: { [Player]: { name: string, zoneType: string? } } = {}
 
 -- [zoneName] = zone part, for every registered (uniquely named) zone
-local zonesByName = {}
+local zonesByName: { [string]: BasePart } = {}
 
 -- Moves a player into newZone (a registered zone part) or out of all zones
 -- (newZone = nil). Fires leave for the old zone, then enter for the new one.
 -- Does nothing if they're already in that zone.
-local function setPlayerZone(player, newZone)
+local function setPlayerZone(player: Player, newZone: BasePart?)
 	local current = playerZone[player]
-	local newName = newZone and newZone.Name or nil
+	local newName = if newZone then newZone.Name else nil
 	if (current and current.name) == newName then return end
 
 	if current then
@@ -69,17 +73,17 @@ local function setPlayerZone(player, newZone)
 		PlayerLeftZone:Fire(player, current.name, current.zoneType)
 	end
 
-	if newZone then
+	if newZone and newName then
 		local zoneType = ZoneUtils.GetZoneType(newZone)
 		playerZone[player] = { name = newName, zoneType = zoneType }
-		print("[ZoneService] Entered:", player.Name, newName, "(" .. tostring(zoneType) .. ")")
+		log.debug("Entered:", player.Name, newName, "(" .. tostring(zoneType) .. ")")
 		PlayerEnteredZone:Fire(player, newName, zoneType)
 	end
 end
 
 -- The registered zone a player is standing in right now, or nil if they're
 -- outside every zone, dead, or have no character.
-local function findZoneForPlayer(player)
+local function findZoneForPlayer(player: Player): BasePart?
 	local char = player.Character
 	if not char then return nil end
 
@@ -87,7 +91,7 @@ local function findZoneForPlayer(player)
 	if not humanoid or humanoid.Health <= 0 then return nil end
 
 	local hrp = char:FindFirstChild("HumanoidRootPart")
-	if not hrp then return nil end
+	if not hrp or not hrp:IsA("BasePart") then return nil end
 
 	local zone = ZoneUtils.GetZonePartForPosition(hrp.Position)
 	-- Ignore duplicate-named zones that registerZone refused.
@@ -116,16 +120,16 @@ end)
 -- Fire leave immediately rather than waiting for the next poll, so tools and
 -- dropped parts are handled even if the character is gone by then.
 
-local function onCharacterAdded(player, char)
+local function onCharacterAdded(player: Player, char: Model)
 	local humanoid = char:WaitForChild("Humanoid", 10)
-	if humanoid then
+	if humanoid and humanoid:IsA("Humanoid") then
 		humanoid.Died:Connect(function()
 			setPlayerZone(player, nil)
 		end)
 	end
 end
 
-local function onPlayerAdded(player)
+local function onPlayerAdded(player: Player)
 	player.CharacterAdded:Connect(function(char)
 		onCharacterAdded(player, char)
 	end)
@@ -148,23 +152,23 @@ end)
 
 -- ── Zone registration ─────────────────────────────────────────────────────────
 
-local function registerZone(zone)
+local function registerZone(zone: Instance)
 	if not zone:IsA("BasePart") then return end
 
 	-- Zone names are identities — two zones with the same name would be
 	-- treated as one bay, so refuse the duplicate loudly.
 	if zonesByName[zone.Name] then
-		warn("ZoneService: duplicate zone name '" .. zone.Name .. "' — skipping the second one. Zone names must be unique.")
+		log.warn("duplicate zone name '" .. zone.Name .. "' — skipping the second one. Zone names must be unique.")
 		return
 	end
 
 	local zoneType = ZoneUtils.GetZoneType(zone)
 	if not zoneType then
-		warn("ZoneService: " .. zone.Name .. " has no ZoneType attribute — it will detect players but grant no tools.")
+		log.warn(zone.Name .. " has no ZoneType attribute — it will detect players but grant no tools.")
 	end
 
 	zonesByName[zone.Name] = zone
-	print("[ZoneService] Registered zone:", zone.Name, "type:", tostring(zoneType))
+	log.debug("Registered zone:", zone.Name, "type:", tostring(zoneType))
 end
 
 -- Zones are registered in the background so starting this module never
@@ -179,7 +183,7 @@ task.spawn(function()
 	zonesFolder.ChildAdded:Connect(registerZone)
 
 	-- Players inside a removed zone get their leave on the next poll.
-	zonesFolder.ChildRemoved:Connect(function(zone)
+	zonesFolder.ChildRemoved:Connect(function(zone: Instance)
 		if zonesByName[zone.Name] == zone then
 			zonesByName[zone.Name] = nil
 		end

@@ -1,3 +1,4 @@
+--!strict
 --[[
     LevelUI (LocalScript)
     ---------------------
@@ -22,20 +23,16 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local remoteFolder      = ReplicatedStorage:WaitForChild("RemoteEvents")
-local xpUpdatedEvent    = remoteFolder:WaitForChild("XpUpdated")
-local leveledUpEvent    = remoteFolder:WaitForChild("LeveledUp")
-local requestXpEvent    = remoteFolder:WaitForChild("RequestXp")
-local moneyUpdatedEvent = remoteFolder:WaitForChild("MoneyUpdated")
-local requestMoneyEvent = remoteFolder:WaitForChild("RequestMoney")
+local Remotes = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Remotes"))
 
--- ── Palette (matches GUIBuilder's white/Gotham HUD style) ───────────────────────
+local xpUpdatedEvent    = Remotes.XpUpdated
+local leveledUpEvent    = Remotes.LeveledUp
+local requestXpEvent    = Remotes.RequestXp
+local moneyUpdatedEvent = Remotes.MoneyUpdated
+local requestMoneyEvent = Remotes.RequestMoney
 
-local WHITE   = Color3.fromRGB(255, 255, 255)
-local DIM     = Color3.fromRGB(200, 200, 200)
-local BAR_BG  = Color3.fromRGB(40, 40, 40)
-local GREEN   = Color3.fromRGB(0, 200, 120) -- matches RepairUI's accent
-local GOLD    = Color3.fromRGB(255, 205, 90) -- money accent
+local UITheme = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("UI"):WaitForChild("UITheme"))
+local C, F    = UITheme.Colors, UITheme.Fonts
 
 -- ── Build GUI ─────────────────────────────────────────────────────────────────
 
@@ -58,9 +55,9 @@ levelLabel.Name = "LevelLabel"
 levelLabel.BackgroundTransparency = 1
 levelLabel.Size = UDim2.new(1, 0, 0, 20)
 levelLabel.Position = UDim2.new(0, 0, 0, 0)
-levelLabel.Font = Enum.Font.GothamBold
+levelLabel.Font = F.Bold
 levelLabel.TextSize = 16
-levelLabel.TextColor3 = WHITE
+levelLabel.TextColor3 = C.Text
 levelLabel.TextXAlignment = Enum.TextXAlignment.Left
 levelLabel.Text = "LEVEL 1"
 levelLabel.Parent = container
@@ -70,29 +67,29 @@ xpLabel.Name = "XpLabel"
 xpLabel.BackgroundTransparency = 1
 xpLabel.Size = UDim2.new(1, 0, 0, 20)
 xpLabel.Position = UDim2.new(0, 0, 0, 0)
-xpLabel.Font = Enum.Font.Gotham
+xpLabel.Font = F.Regular
 xpLabel.TextSize = 12
-xpLabel.TextColor3 = DIM
+xpLabel.TextColor3 = C.TextDim
 xpLabel.TextXAlignment = Enum.TextXAlignment.Right
 xpLabel.Text = "0 / 100 XP"
 xpLabel.Parent = container
 
 local track = Instance.new("Frame")
 track.Name = "Track"
-track.BackgroundColor3 = BAR_BG
+track.BackgroundColor3 = C.Track
 track.BorderSizePixel = 0
 track.Size = UDim2.new(1, 0, 0, 10)
 track.Position = UDim2.new(0, 0, 0, 26)
 track.Parent = container
-Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
+UITheme.Corner(track, UITheme.Radius.Pill)
 
 local fill = Instance.new("Frame")
 fill.Name = "Fill"
-fill.BackgroundColor3 = GREEN
+fill.BackgroundColor3 = C.Accent
 fill.BorderSizePixel = 0
 fill.Size = UDim2.new(0, 0, 1, 0)
 fill.Parent = track
-Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+UITheme.Corner(fill, UITheme.Radius.Pill)
 
 -- Money, right next to the XP bar — just the running total, no breakdown.
 local moneyLabel = Instance.new("TextLabel")
@@ -100,9 +97,9 @@ moneyLabel.Name = "MoneyLabel"
 moneyLabel.BackgroundTransparency = 1
 moneyLabel.Size = UDim2.new(1, 0, 0, 20)
 moneyLabel.Position = UDim2.new(0, 0, 0, 42)
-moneyLabel.Font = Enum.Font.GothamBold
+moneyLabel.Font = F.Bold
 moneyLabel.TextSize = 16
-moneyLabel.TextColor3 = GOLD
+moneyLabel.TextColor3 = C.Money
 moneyLabel.TextXAlignment = Enum.TextXAlignment.Left
 moneyLabel.Text = "$0"
 moneyLabel.Parent = container
@@ -115,9 +112,9 @@ popup.AnchorPoint = Vector2.new(0.5, 0.5)
 popup.Position = UDim2.new(0.5, 0, 0.35, 0)
 popup.Size = UDim2.new(0, 400, 0, 60)
 popup.BackgroundTransparency = 1
-popup.Font = Enum.Font.GothamBold
+popup.Font = F.Bold
 popup.TextSize = 36
-popup.TextColor3 = GREEN
+popup.TextColor3 = C.Accent
 popup.TextTransparency = 1
 popup.Text = ""
 popup.Parent = screenGui
@@ -147,7 +144,7 @@ end
 -- even if the player's looking away from the popup.
 local function pulseLevelLabel()
 	local original = levelLabel.TextColor3
-	TweenService:Create(levelLabel, TweenInfo.new(0.12), { TextColor3 = GREEN }):Play()
+	TweenService:Create(levelLabel, TweenInfo.new(0.12), { TextColor3 = C.Accent }):Play()
 	task.delay(0.12, function()
 		TweenService:Create(levelLabel, TweenInfo.new(0.4), { TextColor3 = original }):Play()
 	end)

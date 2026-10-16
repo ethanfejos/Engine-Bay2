@@ -1,3 +1,4 @@
+--!strict
 --[[
     InspectionUI (LocalScript)
     --------------------------
@@ -11,7 +12,6 @@
 
 local Players           = game:GetService("Players")
 local TweenService      = game:GetService("TweenService")
-local RunService        = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player  = Players.LocalPlayer
@@ -22,22 +22,23 @@ local InspectionState = require(Modules:WaitForChild("InspectionState"))
 local EngineContext   = require(Modules:WaitForChild("EngineContext"))
 local GUIBuilder      = require(UI:WaitForChild("GUIBuilder"))
 local WearDisplay     = require(UI:WaitForChild("WearDisplay"))
+local UITheme         = require(UI:WaitForChild("UITheme"))
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 
-local currentGUI      = nil
-local currentModel    = nil
-local currentLabels   = nil
-local wearConnection  = nil
-local dwellConn       = nil
-local inspectedConn   = nil
-local equippedTool    = nil
+local currentGUI: BillboardGui?                = nil
+local currentModel: Model?                    = nil
+local currentLabels: GUIBuilder.Labels?       = nil
+local wearConnection: RBXScriptConnection?    = nil
+local dwellConn: (() -> ())?                  = nil -- unsubscribe
+local inspectedConn: (() -> ())?              = nil -- unsubscribe
+local equippedTool: string?                   = nil
 
 local FADE_TIME = 0.25
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
-local function fadeIn(label, targetTransparency)
+local function fadeIn(label: TextLabel, targetTransparency: number?)
 	TweenService:Create(label,
 		TweenInfo.new(FADE_TIME, Enum.EasingStyle.Quad),
 		{ TextTransparency = targetTransparency or 0 }
@@ -47,28 +48,31 @@ end
 -- ── Cleanup ───────────────────────────────────────────────────────────────────
 
 local function cleanup()
-	if wearConnection  then wearConnection:Disconnect()  wearConnection  = nil end
-	if dwellConn       then dwellConn()                  dwellConn       = nil end
-	if inspectedConn   then inspectedConn()              inspectedConn   = nil end
-	if currentGUI      then GUIBuilder.Destroy(currentGUI) currentGUI   = nil end
+	local wear, dwell, inspected, gui = wearConnection, dwellConn, inspectedConn, currentGUI
+	wearConnection, dwellConn, inspectedConn, currentGUI = nil, nil, nil, nil
+	if wear      then wear:Disconnect() end
+	if dwell     then dwell() end
+	if inspected then inspected() end
+	if gui       then GUIBuilder.Destroy(gui) end
 	currentModel  = nil
 	currentLabels = nil
 end
 
 -- ── Show GUI ──────────────────────────────────────────────────────────────────
 
-local function showGUI(model)
+local function showGUI(target: Instance?)
 	-- Guard: don't recreate if same model already showing
-	if model == currentModel and currentGUI then return end
+	if target == currentModel and currentGUI then return end
 	cleanup()
-	if not model then return end
+	if not target or not target:IsA("Model") then return end
+	local model: Model = target
 
-	local part = model.PrimaryPart
+	local part: BasePart? = model.PrimaryPart
 		or model:FindFirstChildWhichIsA("BasePart")
 	if not part then return end
 
 	local gui, labels = GUIBuilder.Create(model)
-	if not gui then return end
+	if not gui or not labels then return end
 
 	currentGUI    = gui
 	currentModel  = model
@@ -102,7 +106,7 @@ local function showGUI(model)
 			labels.wearRow.Visible   = false
 		end
 		labels.barFill.Size             = UDim2.new(math.clamp(t, 0, 1), 0, 1, 0)
-		labels.barFill.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		labels.barFill.BackgroundColor3 = UITheme.Colors.Text
 	end)
 
 	-- Watch for inspection completing
@@ -112,7 +116,8 @@ local function showGUI(model)
 			if not currentLabels then return end
 
 			-- Disconnect dwell driver
-			if dwellConn then dwellConn() dwellConn = nil end
+			local dwell = dwellConn
+		if dwell then dwell(); dwellConn = nil end
 
 			-- Swap status for wear row
 			labels.statusRow.Visible = false
@@ -141,7 +146,7 @@ end)
 
 -- ── Tool gate ─────────────────────────────────────────────────────────────────
 
-local function watchTools(char)
+local function watchTools(char: Model)
 	local function check()
 		local tool = char:FindFirstChildOfClass("Tool")
 		equippedTool = tool and tool.Name or nil

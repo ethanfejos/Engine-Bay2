@@ -1,3 +1,4 @@
+--!strict
 --[[
     LevelCurve (ModuleScript)
     -------------------------
@@ -16,7 +17,7 @@ local BASE_XP = 100
 local GROWTH  = 1.15
 
 -- XP required to go from `level` to `level + 1`.
-function LevelCurve.XpForLevel(level)
+function LevelCurve.XpForLevel(level: number): number
 	return math.floor(BASE_XP * (GROWTH ^ (level - 1)))
 end
 
@@ -24,7 +25,7 @@ end
 --   level          - current level (starts at 1)
 --   xpIntoLevel    - XP earned since reaching `level`
 --   xpForNextLevel - XP needed in total to reach `level + 1`
-function LevelCurve.GetLevelInfo(totalXp)
+function LevelCurve.GetLevelInfo(totalXp: number): (number, number, number)
 	local level     = 1
 	local remaining = totalXp
 

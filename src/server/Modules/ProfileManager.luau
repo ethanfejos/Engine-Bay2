@@ -1,3 +1,4 @@
+--!strict
 --[[
     ProfileManager (ModuleScript)
     -----------------------------
@@ -36,10 +37,22 @@ local PROFILE_TEMPLATE = SaveData.TEMPLATE
 
 local ProfileStore = ProfileService.GetProfileStore(DATASTORE_NAME, PROFILE_TEMPLATE)
 
+-- The parts of a ProfileService profile this game uses. (ProfileService
+-- itself is vendored unmodified, so it has no types of its own.)
+export type Profile = {
+	Data: SaveData.Data,
+	AddUserId: (self: Profile, userId: number) -> (),
+	Reconcile: (self: Profile) -> (),
+	ListenToRelease: (self: Profile, listener: () -> ()) -> any,
+	Release: (self: Profile) -> (),
+}
+
+type ProfileCallback = (player: Player, profile: Profile) -> ()
+
 local ProfileManager = {}
 
-local profiles = {} -- [player] = Profile
-local loading  = {} -- [player] = true while LoadProfileAsync is in flight
+local profiles: { [Player]: Profile } = {}
+local loading: { [Player]: boolean }  = {} -- true while LoadProfileAsync is in flight
 
 -- Callbacks run once per player, right after their profile has loaded —
 -- the moment to push initial state (XP, money, inventory) to the client.
@@ -48,10 +61,10 @@ local loading  = {} -- [player] = true while LoadProfileAsync is in flight
 -- fills in the HUD. RemoteEvents fired before the client's LocalScript
 -- connects are queued by Roblox, so firing here is safe.
 -- callback(player, profile) — profile is guaranteed non-nil.
-local loadedCallbacks = {}
+local loadedCallbacks: { ProfileCallback } = {}
 
-local function runLoadedCallback(callback, player, profile)
-	local ok, err = pcall(callback, player, profile)
+local function runLoadedCallback(callback: ProfileCallback, player: Player, profile: Profile)
+	local ok, err = pcall(function() callback(player, profile) end)
 	if not ok then
 		warn("[ProfileManager] OnProfileLoaded callback errored:", err)
 	end
@@ -60,10 +73,10 @@ end
 -- Registers a callback for every profile that loads from now on, AND runs
 -- it straight away for any profile that already loaded before this call —
 -- so a service that happens to start late still pushes for everyone.
-function ProfileManager.OnProfileLoaded(callback)
+function ProfileManager.OnProfileLoaded(callback: ProfileCallback)
 	table.insert(loadedCallbacks, callback)
 	for player, profile in pairs(profiles) do
-		task.spawn(runLoadedCallback, callback, player, profile)
+		task.spawn(function() runLoadedCallback(callback, player, profile) end)
 	end
 end
 
@@ -72,7 +85,7 @@ end
 -- as "this player has no working save right now."
 -- Called automatically for every player (see PlayerAdded at the bottom);
 -- other scripts only need GetProfile.
-function ProfileManager.LoadProfile(player)
+function ProfileManager.LoadProfile(player: Player): Profile?
 	if profiles[player] then return profiles[player] end
 	if loading[player] then return nil end -- already in flight
 	loading[player] = true
@@ -82,18 +95,18 @@ function ProfileManager.LoadProfile(player)
 	loading[player] = nil
 	if profile then
 		for _, callback in ipairs(loadedCallbacks) do
-			task.spawn(runLoadedCallback, callback, player, profile)
+			task.spawn(function() runLoadedCallback(callback, player, profile) end)
 		end
 	end
 	return profile
 end
 
-function ProfileManager._loadProfile(player)
+function ProfileManager._loadProfile(player: Player): Profile?
 	-- "ForceLoad": if a previous session (e.g. this same player on another
 	-- server, or a crashed server) still holds the lock, take it over after
 	-- one retry cycle instead of refusing to load. Fine for a single-player-
 	-- focused game; revisit if that ever causes double-session edge cases.
-	local profile = ProfileStore:LoadProfileAsync("Player_" .. player.UserId, "ForceLoad")
+	local profile: Profile? = ProfileStore:LoadProfileAsync("Player_" .. player.UserId, "ForceLoad")
 
 	if not profile then
 		warn("[ProfileManager] Profile load failed for", player.Name, "- kicking")
@@ -134,7 +147,7 @@ function ProfileManager._loadProfile(player)
 	return profile
 end
 
-function ProfileManager.GetProfile(player)
+function ProfileManager.GetProfile(player: Player): Profile?
 	return profiles[player]
 end
 
@@ -145,9 +158,9 @@ end
 -- connection order between different scripts isn't something to depend on,
 -- and if it fired after this file's own release, profile.Data would already
 -- be gone. callback(player, profile) — profile is guaranteed non-nil here.
-local beforeReleaseCallbacks = {}
+local beforeReleaseCallbacks: { ProfileCallback } = {}
 
-function ProfileManager.OnBeforeRelease(callback)
+function ProfileManager.OnBeforeRelease(callback: ProfileCallback)
 	table.insert(beforeReleaseCallbacks, callback)
 end
 
@@ -155,7 +168,7 @@ Players.PlayerRemoving:Connect(function(player)
 	local profile = profiles[player]
 	if profile then
 		for _, callback in ipairs(beforeReleaseCallbacks) do
-			local ok, err = pcall(callback, player, profile)
+			local ok, err = pcall(function() callback(player, profile) end)
 			if not ok then
 				warn("[ProfileManager] OnBeforeRelease callback errored:", err)
 			end
@@ -167,9 +180,9 @@ end)
 -- ProfileManager owns loading, so no other script has to remember to
 -- (InventoryService used to). The loop catches players who joined before
 -- this module was first required — common in Studio play-solo.
-Players.PlayerAdded:Connect(ProfileManager.LoadProfile)
+Players.PlayerAdded:Connect(function(player) ProfileManager.LoadProfile(player) end)
 for _, player in ipairs(Players:GetPlayers()) do
-	task.spawn(ProfileManager.LoadProfile, player)
+	task.spawn(function() ProfileManager.LoadProfile(player) end)
 end
 
 return ProfileManager

@@ -1,3 +1,4 @@
+--!strict
 --[[
     SaveData (ModuleScript, server)
     -------------------------------
@@ -21,13 +22,27 @@
     (Also lower TEMPLATE.money, which is what brand-new players get.)
 ]]
 
+local Types = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Types"))
+
+type Item = Types.InventoryItem
+
+-- A player's save, as every service sees it after loading.
+export type Data = {
+	dataVersion: number,
+	inventory: { Item },
+	dropped: { [string]: Item },
+	xp: number,
+	inspectedForXp: { [string]: boolean },
+	money: number,
+}
+
 local SaveData = {}
 
 -- Bump this together with adding a MIGRATIONS step.
 SaveData.CURRENT_VERSION = 1
 
 -- What a brand-new player starts with.
-SaveData.TEMPLATE = {
+local TEMPLATE: Data = {
 	dataVersion = SaveData.CURRENT_VERSION,
 
 	-- Parts held: list of { id, name, wear, engineName, relativeData }
@@ -47,9 +62,10 @@ SaveData.TEMPLATE = {
 	-- Testing-phase starting balance; see the migration example above.
 	money = 100000,
 }
+SaveData.TEMPLATE = TEMPLATE
 
 -- [version] = function(data) — upgrades a save from version-1 to version.
-local MIGRATIONS = {
+local MIGRATIONS: { [number]: (data: any) -> () } = {
 	-- 1: first versioned format. Saves from before versioning already have
 	-- every field (Reconcile filled them in), so nothing to change.
 	[1] = function(_data) end,
@@ -58,7 +74,7 @@ local MIGRATIONS = {
 -- Runs every migration the save hasn't had. Must run BEFORE Reconcile:
 -- Reconcile would otherwise add dataVersion = CURRENT_VERSION to an old
 -- save and its migrations would be skipped. Returns the number of steps run.
-function SaveData.Migrate(data)
+function SaveData.Migrate(data: any): number
 	local version = tonumber(data.dataVersion) or 0
 	local ran = 0
 	for v = version + 1, SaveData.CURRENT_VERSION do
@@ -74,7 +90,7 @@ end
 
 -- ── Sanitize ──────────────────────────────────────────────────────────────────
 
-local function cleanRelativeData(rd)
+local function cleanRelativeData(rd: any): Types.RelativeData?
 	if type(rd) ~= "table" then return nil end
 	for _, key in ipairs({ "x", "y", "z", "rx", "ry", "rz" }) do
 		if type(rd[key]) ~= "number" or rd[key] ~= rd[key] then -- missing or NaN
@@ -87,30 +103,30 @@ end
 -- A clean copy of an inventory item, or nil plus a reason if it can't be
 -- saved. Missing positions are allowed (the part reinstalls at the
 -- template's own position); a missing id, name or engine is not.
-local function cleanItem(item)
+local function cleanItem(item: any): (Item?, string?)
 	if type(item) ~= "table" then return nil, "not a table" end
 	if type(item.id) ~= "string" or item.id == "" then return nil, "no id" end
 	if type(item.name) ~= "string" or item.name == "" then return nil, "no name" end
 	if type(item.engineName) ~= "string" or item.engineName == "" then return nil, "no engine" end
 
-	local wear = tonumber(item.wear)
-	if not wear or wear ~= wear then
-		wear = 100 -- unknown condition: treat as perfect rather than lose the part
+	local wear: number = tonumber(item.wear) or 100 -- unknown condition: treat as perfect rather than lose the part
+	if wear ~= wear then -- NaN
+		wear = 100
 	end
 
-	return {
+	return ({
 		id           = item.id,
 		name         = item.name,
 		engineName   = item.engineName,
 		wear         = math.clamp(wear, 0, 100),
 		relativeData = cleanRelativeData(item.relativeData),
-	}
+	} :: Item), nil
 end
 
 -- Repairs `data` in place. Returns a list of human-readable notes about
 -- anything that was changed (for the Output log); empty if all was well.
-function SaveData.Sanitize(data)
-	local notes = {}
+function SaveData.Sanitize(data: any): { string }
+	local notes: { string } = {}
 
 	-- Numbers
 	local xp = tonumber(data.xp)
@@ -118,14 +134,14 @@ function SaveData.Sanitize(data)
 		table.insert(notes, "xp reset (was " .. tostring(data.xp) .. ")")
 		xp = 0
 	end
-	data.xp = math.floor(xp)
+	data.xp = math.floor(xp :: number)
 
 	local money = tonumber(data.money)
 	if not money or money ~= money then
 		table.insert(notes, "money reset (was " .. tostring(data.money) .. ")")
 		money = 0
 	end
-	data.money = math.floor(money)
+	data.money = math.floor(money :: number)
 
 	-- Inspected set: only "string -> true"
 	if type(data.inspectedForXp) ~= "table" then
@@ -140,11 +156,11 @@ function SaveData.Sanitize(data)
 	end
 
 	-- Inventory: clean every item, drop broken ones and duplicate ids
-	local cleaned, seen = {}, {}
-	local function keep(item, source)
+	local cleaned: { Item }, seen: { [string]: boolean } = {}, {}
+	local function keep(item: any, source: string): boolean
 		local clean, why = cleanItem(item)
 		if not clean then
-			table.insert(notes, source .. " item dropped (" .. why .. ")")
+			table.insert(notes, source .. " item dropped (" .. (why or "?") .. ")")
 		elseif seen[clean.id] then
 			table.insert(notes, source .. " duplicate " .. clean.id .. " dropped")
 		else

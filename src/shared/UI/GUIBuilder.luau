@@ -1,3 +1,4 @@
+--!strict
 --[[
     GUIBuilder (ModuleScript)
     -------------------------
@@ -5,39 +6,50 @@
     - Fully transparent background
     - White accent colours
     - No text stroke
-    - Gotham font throughout
+    - Gotham font throughout (colours and fonts from UITheme)
 ]]
 
 local TweenService = game:GetService("TweenService")
+
+local UITheme = require(script.Parent:WaitForChild("UITheme"))
+local F       = UITheme.Fonts
+
+export type Labels = {
+	name: TextLabel,
+	status: TextLabel,
+	wear: TextLabel,
+	barTrack: Frame,
+	barFill: Frame,
+	wearRow: Frame,
+	statusRow: Frame,
+	all: { TextLabel },
+}
 
 local GUIBuilder = {}
 
 -- How long the billboard takes to fade out when it's destroyed.
 local FADE_OUT = TweenInfo.new(0.2, Enum.EasingStyle.Quad)
 
--- ── Palette ───────────────────────────────────────────────────────────────────
-
+-- Billboard colours, from the shared theme. The bar fill starts white;
+-- WearDisplay recolours it by condition once the part is inspected.
 local C = {
-	White   = Color3.fromRGB(255, 255, 255),
-	Dim     = Color3.fromRGB(200, 200, 200),
-	BarBG   = Color3.fromRGB(60,  60,  60),
-	BarFill = Color3.fromRGB(255, 255, 255),
+	White   = UITheme.Colors.Text,
+	Dim     = UITheme.Colors.TextDim,
+	BarBG   = UITheme.Colors.Track,
+	BarFill = UITheme.Colors.Text,
 }
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
-local function corner(parent, radius)
-	Instance.new("UICorner", parent).CornerRadius =
-		radius or UDim.new(0, 4)
-end
+local corner = UITheme.Corner
 
-local function label(name, text, size, color, parent)
+local function label(name: string, text: string, size: number, color: Color3, parent: Instance): TextLabel
 	local l = Instance.new("TextLabel")
 	l.Name                   = name
 	l.Text                   = text
 	l.TextSize               = size
 	l.TextColor3             = color
-	l.Font                   = Enum.Font.Gotham
+	l.Font                   = F.Regular
 	l.BackgroundTransparency = 1
 	l.TextTransparency       = 1
 	l.TextXAlignment         = Enum.TextXAlignment.Center
@@ -49,8 +61,8 @@ end
 
 -- ── Create ────────────────────────────────────────────────────────────────────
 
-function GUIBuilder.Create(model)
-	local part = model.PrimaryPart
+function GUIBuilder.Create(model: Model): (BillboardGui?, Labels?)
+	local part: BasePart? = model.PrimaryPart
 		or model:FindFirstChildWhichIsA("BasePart")
 	if not part then return nil, nil end
 
@@ -73,7 +85,7 @@ function GUIBuilder.Create(model)
 	bg.BackgroundTransparency = 1
 	bg.BorderSizePixel        = 0
 	bg.Parent                 = gui
-	corner(bg, UDim.new(0, 6))
+	corner(bg, UITheme.Radius.Large)
 
 	-- Invisible hit area
 	local hit                 = Instance.new("TextButton")
@@ -100,7 +112,7 @@ function GUIBuilder.Create(model)
 		nameFrame
 	)
 	nameLabel.TextXAlignment  = Enum.TextXAlignment.Left
-	nameLabel.Font            = Enum.Font.GothamBold
+	nameLabel.Font            = F.Bold
 
 	-- Divider
 	local divider             = Instance.new("Frame")
@@ -144,7 +156,7 @@ function GUIBuilder.Create(model)
 	wearLabel.Size            = UDim2.new(0, 60, 1, 0)
 	wearLabel.Position        = UDim2.new(0, 0, 0, 0)
 	wearLabel.BackgroundTransparency = 1
-	wearLabel.Font            = Enum.Font.GothamBold
+	wearLabel.Font            = F.Bold
 	wearLabel.TextSize        = 11
 	wearLabel.TextColor3      = C.White
 	wearLabel.TextXAlignment  = Enum.TextXAlignment.Left
@@ -162,7 +174,7 @@ function GUIBuilder.Create(model)
 	barTrack.BackgroundTransparency = 0.3
 	barTrack.BorderSizePixel  = 0
 	barTrack.Parent           = wearRow
-	corner(barTrack, UDim.new(1, 0))
+	corner(barTrack, UITheme.Radius.Pill)
 
 	-- Bar fill
 	local barFill             = Instance.new("Frame")
@@ -171,9 +183,9 @@ function GUIBuilder.Create(model)
 	barFill.BackgroundColor3  = C.BarFill
 	barFill.BorderSizePixel   = 0
 	barFill.Parent            = barTrack
-	corner(barFill, UDim.new(1, 0))
+	corner(barFill, UITheme.Radius.Pill)
 
-	local labels = {
+	local labels: Labels = {
 		name      = nameLabel,
 		status    = statusLabel,
 		wear      = wearLabel,
@@ -197,7 +209,7 @@ end
 -- Callers must stop anything that writes to these labels every frame (e.g.
 -- WearDisplay's RenderStepped) BEFORE calling this, or it will fight the
 -- fade. InspectionUI's cleanup() already does.
-function GUIBuilder.Destroy(gui)
+function GUIBuilder.Destroy(gui: BillboardGui?)
 	if not gui then return end
 	for _, desc in ipairs(gui:GetDescendants()) do
 		if desc:IsA("TextLabel") or desc:IsA("TextButton") then

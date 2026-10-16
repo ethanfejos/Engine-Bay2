@@ -1,3 +1,4 @@
+--!strict
 --[[
     PartRemoveEffect (LocalScript)
     ------------------------------
@@ -15,9 +16,8 @@ local TweenService      = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService        = game:GetService("RunService")
 
-local partRemovingEvent = ReplicatedStorage
-	:WaitForChild("RemoteEvents")
-	:WaitForChild("PartRemoving")
+local Remotes = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Remotes"))
+local partRemovingEvent = Remotes.PartRemoving
 
 -- ── Config ────────────────────────────────────────────────────────────────────
 
@@ -26,14 +26,13 @@ local FLOAT_DURATION  = 0.6
 local BOLT_SPIN_ROTS  = 3        -- full rotations
 local BOLT_SPIN_TIME  = 1.2      -- seconds for spin (increase to slow down)
 local BOLT_PULL_DIST  = 0.6      -- studs to pull out along shaft axis
-local BOLT_PULL_TIME  = 1.2      -- matches spin so they finish together
 
 -- ── Regular Part — Float Up & Fade ────────────────────────────────────────────
 
-local function playFloatEffect(model)
+local function playFloatEffect(model: Instance)
 	if not model or not model.Parent then return end
 
-	local parts = {}
+	local parts: { BasePart } = {}
 	for _, desc in ipairs(model:GetDescendants()) do
 		if desc:IsA("BasePart") then
 			table.insert(parts, desc)
@@ -63,7 +62,7 @@ local function playFloatEffect(model)
 	end
 
 	for _, desc in ipairs(model:GetDescendants()) do
-		if desc:IsA("Decal") or desc:IsA("Texture") then
+		if desc:IsA("Decal") then -- Textures are Decals too
 			TweenService:Create(desc, tweenInfo, { Transparency = 1 }):Play()
 		end
 	end
@@ -71,7 +70,7 @@ end
 
 -- ── Bolt — Spin Then Pull ─────────────────────────────────────────────────────
 
-local function getBoltShaftAxis(model)
+local function getBoltShaftAxis(model: Model): Vector3
 	local cf, size = model:GetBoundingBox()
 	if size.X >= size.Y and size.X >= size.Z then
 		return cf.RightVector
@@ -82,7 +81,7 @@ local function getBoltShaftAxis(model)
 	end
 end
 
-local function playBoltEffect(model)
+local function playBoltEffect(model: Model)
 	if not model or not model.Parent then return end
 
 	-- Find the primary bolt mesh
@@ -90,7 +89,7 @@ local function playBoltEffect(model)
 		or model:FindFirstChildWhichIsA("BasePart")
 	if not primaryPart then return end
 
-	local parts = {}
+	local parts: { BasePart } = {}
 	for _, desc in ipairs(model:GetDescendants()) do
 		if desc:IsA("BasePart") then
 			table.insert(parts, desc)
@@ -110,11 +109,11 @@ local function playBoltEffect(model)
 	local spinTotal   = math.rad(360 * BOLT_SPIN_ROTS)
 	local elapsed     = 0
 	local originCF    = model:GetPivot()
-	local originPositions = {}
+	local originPositions: { [BasePart]: CFrame } = {}
 	for _, part in ipairs(parts) do
 		originPositions[part] = part.CFrame
 	end
-	local spinConn
+	local spinConn: RBXScriptConnection
 
 	spinConn = RunService.RenderStepped:Connect(function(dt)
 		elapsed = elapsed + dt
@@ -154,7 +153,7 @@ end
 partRemovingEvent.OnClientEvent:Connect(function(model)
 	if not model then return end
 
-	if model:GetAttribute("IsBolt") then
+	if model:GetAttribute("IsBolt") and model:IsA("Model") then
 		playBoltEffect(model)
 	else
 		playFloatEffect(model)

@@ -1,3 +1,4 @@
+--!strict
 --[[
     InventoryUI (LocalScript)
     -------------------------
@@ -12,8 +13,8 @@
       highlights, billboards and workbench
 
     Clicking a row selects it (click again or press Escape to deselect).
-    Selection is sent on the GhostSelectionChanged BindableEvent, which
-    GhostSystem (reinstall ghost) and RepairUI (workbench) listen to. If the
+    Selection is sent on ClientSignals.PartSelected, which GhostSystem
+    (reinstall ghost) and RepairUI (workbench) listen to. If the
     selected part leaves the inventory, the selection is cleared.
 
     Also: search as you type, a sort menu (Name, Condition low/high, Engine),
@@ -35,42 +36,25 @@ local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 local camera    = workspace.CurrentCamera
 
-local Shared      = ReplicatedStorage:WaitForChild("Shared")
-local WearColors  = require(Shared:WaitForChild("Config"):WaitForChild("WearColors"))
-local RepairRules = require(Shared:WaitForChild("Config"):WaitForChild("RepairRules"))
-local PartRules   = require(Shared:WaitForChild("Modules"):WaitForChild("PartRules"))
-local ZoneUtils   = require(Shared:WaitForChild("Modules"):WaitForChild("ZoneUtils"))
+local Shared        = ReplicatedStorage:WaitForChild("Shared")
+local WearColors    = require(Shared:WaitForChild("Config"):WaitForChild("WearColors"))
+local RepairRules   = require(Shared:WaitForChild("Config"):WaitForChild("RepairRules"))
+local PartRules     = require(Shared:WaitForChild("Modules"):WaitForChild("PartRules"))
+local ZoneUtils     = require(Shared:WaitForChild("Modules"):WaitForChild("ZoneUtils"))
+local Remotes       = require(Shared:WaitForChild("Modules"):WaitForChild("Remotes"))
+local ClientSignals = require(Shared:WaitForChild("Modules"):WaitForChild("ClientSignals"))
+local Types         = require(Shared:WaitForChild("Modules"):WaitForChild("Types"))
+local UITheme       = require(Shared:WaitForChild("UI"):WaitForChild("UITheme"))
+
+local C, F = UITheme.Colors, UITheme.Fonts
 
 -- ── Remotes & events ──────────────────────────────────────────────────────────
 
-local remotes          = ReplicatedStorage:WaitForChild("RemoteEvents")
-local inventoryUpdated = remotes:WaitForChild("InventoryUpdated")
-local requestInventory = remotes:WaitForChild("RequestInventory")
-local clearInventory   = remotes:WaitForChild("ClearInventory")
-
--- Client BindableEvents shared with GhostSystem / RepairUI. Created here if
--- they don't exist yet; FindFirstChild + create can't race, since neither
--- step yields.
-local function getOrCreateBindable(name)
-	local existing = ReplicatedStorage:FindFirstChild(name)
-	if existing then return existing end
-	local b  = Instance.new("BindableEvent")
-	b.Name   = name
-	b.Parent = ReplicatedStorage
-	return b
-end
-
-local selectionChangedEvent = getOrCreateBindable("GhostSelectionChanged")
-local removeFromListEvent   = getOrCreateBindable("GhostRemoveFromList")
+local inventoryUpdated = Remotes.InventoryUpdated
+local requestInventory = Remotes.RequestInventory
+local clearInventory   = Remotes.ClearInventory
 
 -- ── Look ──────────────────────────────────────────────────────────────────────
-
-local WHITE  = Color3.fromRGB(255, 255, 255)
-local GREEN  = Color3.fromRGB(0, 200, 120)
-local RED    = Color3.fromRGB(255, 50, 50)
-local AMBER  = Color3.fromRGB(230, 150, 30)
-local DIM    = Color3.fromRGB(160, 160, 160)
-local MENU   = Color3.fromRGB(20, 20, 20)
 
 local PANEL_W    = 220
 local PANEL_H    = 360
@@ -96,30 +80,28 @@ local SORT_MODES = {
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 
-local inventory    = {}    -- latest list from the server
-local rows         = {}    -- [itemId] = row entry (see makeRow)
-local selectedId   = nil
+type Item = Types.InventoryItem
+type Row = { frame: Frame, indicator: Frame, name: TextLabel, detail: TextLabel, cond: TextLabel }
+
+local inventory: { Item }        = {}    -- latest list from the server
+local rows: { [string]: Row }    = {}    -- [itemId] = row entry (see makeRow)
+local selectedId: string?        = nil
 local panelOpen    = true
 local searchText   = ""
 local sortIndex    = 1
 local dropdownOpen = false
-local clearArmedAt = nil   -- os.clock() when CLEAR was first clicked
+local clearArmedAt: number? = nil   -- os.clock() when CLEAR was first clicked
 
 -- ── Small builders ────────────────────────────────────────────────────────────
 
-local function corner(parent, radius)
-	local c        = Instance.new("UICorner")
-	c.CornerRadius = radius or UDim.new(0, 4)
-	c.Parent       = parent
-end
-
-local function text(name, value, size, color, xAlign, bold, parent)
+local function text(name: string, value: string, size: number, color: Color3,
+	xAlign: Enum.TextXAlignment?, bold: boolean, parent: Instance): TextLabel
 	local l                  = Instance.new("TextLabel")
 	l.Name                   = name
 	l.Text                   = value
 	l.TextSize               = size
 	l.TextColor3             = color
-	l.Font                   = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+	l.Font                   = bold and F.Bold or F.Regular
 	l.BackgroundTransparency = 1
 	l.TextXAlignment         = xAlign or Enum.TextXAlignment.Left
 	l.TextYAlignment         = Enum.TextYAlignment.Center
@@ -129,28 +111,28 @@ local function text(name, value, size, color, xAlign, bold, parent)
 	return l
 end
 
-local function divider(parent, y)
+local function divider(parent: Instance, y: number)
 	local d                  = Instance.new("Frame")
 	d.Size                   = UDim2.new(1, -16, 0, 1)
 	d.Position               = UDim2.new(0, 8, 0, y)
-	d.BackgroundColor3       = WHITE
+	d.BackgroundColor3       = C.Text
 	d.BackgroundTransparency = 0.7
 	d.BorderSizePixel        = 0
 	d.Parent                 = parent
 end
 
-local function flatButton(label, parent)
+local function flatButton(label: string, parent: Instance): TextButton
 	local b                  = Instance.new("TextButton")
-	b.BackgroundColor3       = WHITE
+	b.BackgroundColor3       = C.Text
 	b.BackgroundTransparency = 0.92
 	b.BorderSizePixel        = 0
-	b.Font                   = Enum.Font.GothamBold
+	b.Font                   = F.Bold
 	b.Text                   = label
-	b.TextColor3             = WHITE
+	b.TextColor3             = C.Text
 	b.TextSize               = 10
 	b.AutoButtonColor        = false
 	b.Parent                 = parent
-	corner(b)
+	UITheme.Corner(b)
 	return b
 end
 
@@ -192,18 +174,18 @@ toggleBtn.Size     = UDim2.new(0, TOGGLE_W, 0, TOGGLE_H)
 toggleBtn.Position = UDim2.new(0, 0, 0.5, -TOGGLE_H / 2)
 toggleBtn.BackgroundTransparency = 0.88
 
-local arrowLabel = text("Arrow", "▶", 9, WHITE, Enum.TextXAlignment.Center, true, toggleBtn)
+local arrowLabel = text("Arrow", "▶", 9, C.Text, Enum.TextXAlignment.Center, true, toggleBtn)
 
 local badge                  = Instance.new("Frame")
 badge.Size                   = UDim2.new(0, TOGGLE_W, 0, 18)
 badge.Position               = UDim2.new(0, 0, 0.5, -(TOGGLE_H / 2) - 22)
-badge.BackgroundColor3       = RED
+badge.BackgroundColor3       = C.Danger
 badge.BackgroundTransparency = 0.2
 badge.BorderSizePixel        = 0
 badge.Visible                = false
 badge.Parent                 = root
-corner(badge)
-local badgeLabel = text("Count", "0", 10, WHITE, Enum.TextXAlignment.Center, true, badge)
+UITheme.Corner(badge)
+local badgeLabel = text("Count", "0", 10, C.Text, Enum.TextXAlignment.Center, true, badge)
 
 local panel                  = Instance.new("Frame")
 panel.Name                   = "Panel"
@@ -218,7 +200,7 @@ titleRow.Size                   = UDim2.new(1, -16, 0, 26)
 titleRow.Position               = UDim2.new(0, 8, 0, 6)
 titleRow.BackgroundTransparency = 1
 titleRow.Parent                 = panel
-text("Title", "PARTS INVENTORY", 13, WHITE, nil, true, titleRow)
+text("Title", "PARTS INVENTORY", 13, C.Text, nil, true, titleRow)
 divider(panel, 34)
 
 -- Search
@@ -226,19 +208,19 @@ local searchBox                  = Instance.new("TextBox")
 searchBox.Name                   = "SearchBox"
 searchBox.Size                   = UDim2.new(1, -16, 0, 22)
 searchBox.Position               = UDim2.new(0, 8, 0, 40)
-searchBox.BackgroundColor3       = WHITE
+searchBox.BackgroundColor3       = C.Text
 searchBox.BackgroundTransparency = 0.92
 searchBox.BorderSizePixel        = 0
-searchBox.Font                   = Enum.Font.Gotham
+searchBox.Font                   = F.Regular
 searchBox.PlaceholderText        = "Search parts or engines..."
-searchBox.PlaceholderColor3      = DIM
+searchBox.PlaceholderColor3      = C.TextMuted
 searchBox.Text                   = ""
-searchBox.TextColor3             = WHITE
+searchBox.TextColor3             = C.Text
 searchBox.TextSize               = 12
 searchBox.TextXAlignment         = Enum.TextXAlignment.Left
 searchBox.ClearTextOnFocus       = false
 searchBox.Parent                 = panel
-corner(searchBox)
+UITheme.Corner(searchBox)
 local searchPad       = Instance.new("UIPadding")
 searchPad.PaddingLeft = UDim.new(0, 6)
 searchPad.Parent      = searchBox
@@ -251,7 +233,7 @@ sortRow.BackgroundTransparency = 1
 sortRow.ZIndex                 = 5
 sortRow.Parent                 = panel
 
-local sortLabel = text("SortLabel", "SORT:", 11, DIM, nil, false, sortRow)
+local sortLabel = text("SortLabel", "SORT:", 11, C.TextMuted, nil, false, sortRow)
 sortLabel.Size  = UDim2.new(0.3, 0, 1, 0)
 
 local sortBtn    = flatButton(SORT_MODES[sortIndex].label .. " ▾", sortRow)
@@ -262,13 +244,13 @@ sortBtn.TextSize = 11
 local dropFrame                  = Instance.new("Frame")
 dropFrame.Size                   = UDim2.new(0.7, 0, 0, #SORT_MODES * 20)
 dropFrame.Position               = UDim2.new(0.3, 0, 1, 2)
-dropFrame.BackgroundColor3       = MENU
+dropFrame.BackgroundColor3       = C.Dark
 dropFrame.BackgroundTransparency = 0.1
 dropFrame.BorderSizePixel        = 0
 dropFrame.Visible                = false
 dropFrame.ZIndex                 = 10
 dropFrame.Parent                 = sortRow
-corner(dropFrame)
+UITheme.Corner(dropFrame)
 
 local dropLayout     = Instance.new("UIListLayout")
 dropLayout.SortOrder = Enum.SortOrder.LayoutOrder
@@ -279,9 +261,9 @@ for i, mode in ipairs(SORT_MODES) do
 	local b                  = Instance.new("TextButton")
 	b.Size                   = UDim2.new(1, 0, 0, 20)
 	b.BackgroundTransparency = 1
-	b.Font                   = Enum.Font.Gotham
+	b.Font                   = F.Regular
 	b.Text                   = mode.label
-	b.TextColor3             = WHITE
+	b.TextColor3             = C.Text
 	b.TextSize               = 11
 	b.LayoutOrder            = i
 	b.ZIndex                 = 11
@@ -297,9 +279,9 @@ colRow.Size                   = UDim2.new(1, -16, 0, 14)
 colRow.Position               = UDim2.new(0, 8, 0, 98)
 colRow.BackgroundTransparency = 1
 colRow.Parent                 = panel
-local hPart = text("HPart", "PART", 10, WHITE, nil, true, colRow)
+local hPart = text("HPart", "PART", 10, C.Text, nil, true, colRow)
 hPart.Size  = UDim2.new(0.72, 0, 1, 0)
-local hCond    = text("HCond", "COND.", 10, WHITE, Enum.TextXAlignment.Right, true, colRow)
+local hCond    = text("HCond", "COND.", 10, C.Text, Enum.TextXAlignment.Right, true, colRow)
 hCond.Size     = UDim2.new(0.28, 0, 1, 0)
 hCond.Position = UDim2.new(0.72, 0, 0, 0)
 
@@ -309,7 +291,7 @@ divider(panel, 114)
 local clearBtn                  = flatButton("CLEAR INVENTORY", panel)
 clearBtn.Size                   = UDim2.new(1, -16, 0, 18)
 clearBtn.Position               = UDim2.new(0, 8, 0, 118)
-clearBtn.BackgroundColor3       = RED
+clearBtn.BackgroundColor3       = C.Danger
 clearBtn.BackgroundTransparency = 0.6
 
 divider(panel, 140)
@@ -321,7 +303,7 @@ scroll.Position               = UDim2.new(0, 8, 0, 144)
 scroll.BackgroundTransparency = 1
 scroll.BorderSizePixel        = 0
 scroll.ScrollBarThickness     = 2
-scroll.ScrollBarImageColor3   = WHITE
+scroll.ScrollBarImageColor3   = C.Text
 scroll.AutomaticCanvasSize    = Enum.AutomaticSize.Y
 scroll.CanvasSize             = UDim2.new(0, 0, 0, 0)
 scroll.Parent                 = panel
@@ -331,7 +313,7 @@ listLayout.Padding   = UDim.new(0, 2)
 listLayout.SortOrder = Enum.SortOrder.LayoutOrder
 listLayout.Parent    = scroll
 
-local emptyLabel       = text("Empty", "No parts removed", 11, DIM, Enum.TextXAlignment.Center, false, scroll)
+local emptyLabel       = text("Empty", "No parts removed", 11, C.TextMuted, Enum.TextXAlignment.Center, false, scroll)
 emptyLabel.Size        = UDim2.new(1, 0, 0, 30)
 emptyLabel.LayoutOrder = -1
 
@@ -350,22 +332,22 @@ end)
 -- Short status for a part, or nil. "FITS HERE" uses the same rule the
 -- server enforces on reinstall (PartRules), so it only shows when a
 -- reinstall would really be accepted right now.
-local function getStatus(item, bayEngine)
+local function getStatus(item: Item, bayEngine: Model?): (string?, Color3?)
 	local wear = tonumber(item.wear) or 0
 	if bayEngine and bayEngine.Name == item.engineName
 		and not bayEngine:FindFirstChild(item.name) then
 		local template = RepairRules.FindTemplate(item.engineName, item.name)
 		if template and PartRules.GetReinstallBlocker(template, bayEngine) == nil then
-			return "FITS HERE", GREEN
+			return "FITS HERE", C.Accent
 		end
 	end
 	if not RepairRules.GetOptions(wear).canRepair and wear < 100 then
-		return "NEEDS REPLACING", AMBER
+		return "NEEDS REPLACING", C.Warning
 	end
 	if wear >= 100 then
-		return "PERFECT", DIM
+		return "PERFECT", C.TextMuted
 	end
-	return nil
+	return nil, nil
 end
 
 -- ── Rows ──────────────────────────────────────────────────────────────────────
@@ -374,8 +356,8 @@ end
 local function highlightSelection()
 	for id, row in pairs(rows) do
 		local isSel = id == selectedId
-		row.name.TextColor3 = isSel and GREEN or WHITE
-		row.name.Font       = isSel and Enum.Font.GothamBold or Enum.Font.Gotham
+		row.name.TextColor3 = isSel and C.Accent or C.Text
+		row.name.Font       = isSel and F.Bold or F.Regular
 		row.indicator.BackgroundTransparency = isSel and 0 or 1
 	end
 end
@@ -383,7 +365,7 @@ end
 -- Changes the selection and tells GhostSystem / RepairUI. Only fires when
 -- the selection actually changes, so inventory updates (e.g. a repair
 -- finishing) don't make the bench or ghost rebuild.
-local function setSelected(itemId)
+local function setSelected(itemId: string?)
 	local item = nil
 	if itemId then
 		for _, it in ipairs(inventory) do
@@ -402,13 +384,13 @@ local function setSelected(itemId)
 	selectedId = newId
 	highlightSelection()
 	if item then
-		selectionChangedEvent:Fire(item.id, item.name, item.engineName, item.relativeData)
+		ClientSignals.PartSelected:Fire(item.id, item.name, item.engineName, item.relativeData)
 	else
-		selectionChangedEvent:Fire(nil, nil, nil, nil)
+		ClientSignals.PartSelected:Fire(nil, nil, nil, nil)
 	end
 end
 
-local function makeRow(itemId)
+local function makeRow(itemId: string): Row
 	local frame                  = Instance.new("Frame")
 	frame.Name                   = "Row"
 	frame.Size                   = UDim2.new(1, 0, 0, ROW_H)
@@ -418,25 +400,25 @@ local function makeRow(itemId)
 	local indicator                  = Instance.new("Frame")
 	indicator.Size                   = UDim2.new(0, 2, 0.7, 0)
 	indicator.Position               = UDim2.new(0, 0, 0.15, 0)
-	indicator.BackgroundColor3       = GREEN
+	indicator.BackgroundColor3       = C.Accent
 	indicator.BackgroundTransparency = 1
 	indicator.BorderSizePixel        = 0
 	indicator.Parent                 = frame
-	corner(indicator, UDim.new(1, 0))
+	UITheme.Corner(indicator, UITheme.Radius.Pill)
 
-	local name    = text("Name", "", 12, WHITE, nil, false, frame)
+	local name    = text("Name", "", 12, C.Text, nil, false, frame)
 	name.Size     = UDim2.new(0.72, -6, 0, 16)
 	name.Position = UDim2.new(0, 6, 0, 1)
 
-	local detail    = text("Detail", "", 9, DIM, nil, false, frame)
+	local detail    = text("Detail", "", 9, C.TextMuted, nil, false, frame)
 	detail.Size     = UDim2.new(0.72, -6, 0, 12)
 	detail.Position = UDim2.new(0, 6, 0, 16)
 	detail.RichText = true
 
-	local cond    = text("Condition", "", 12, WHITE, Enum.TextXAlignment.Right, true, frame)
+	local cond    = text("Condition", "", 12, C.Text, Enum.TextXAlignment.Right, true, frame)
 	cond.Size     = UDim2.new(0.28, 0, 1, 0)
 	cond.Position = UDim2.new(0.72, 0, 0, 0)
-	cond.Font     = Enum.Font.RobotoMono
+	cond.Font     = F.Mono
 
 	local button                  = Instance.new("TextButton")
 	button.Size                   = UDim2.new(1, 0, 1, 0)
@@ -451,12 +433,8 @@ local function makeRow(itemId)
 	return { frame = frame, indicator = indicator, name = name, detail = detail, cond = cond }
 end
 
-local function toHex(color)
-	return string.format("#%02X%02X%02X", color.R * 255, color.G * 255, color.B * 255)
-end
-
 -- Updates a row's text and colours from its item.
-local function fillRow(row, item, bayEngine)
+local function fillRow(row: Row, item: Item, bayEngine: Model?)
 	local wear = tonumber(item.wear) or 0
 	row.name.Text       = item.name
 	row.cond.Text       = string.format("%d%%", math.floor(wear))
@@ -464,14 +442,14 @@ local function fillRow(row, item, bayEngine)
 
 	local status, statusColor = getStatus(item, bayEngine)
 	local engineText = string.upper(item.engineName or "?")
-	if status then
-		row.detail.Text = string.format('%s  ·  <font color="%s">%s</font>', engineText, toHex(statusColor), status)
+	if status and statusColor then
+		row.detail.Text = string.format('%s  ·  <font color="%s">%s</font>', engineText, UITheme.ToHex(statusColor), status)
 	else
 		row.detail.Text = engineText
 	end
 end
 
-local function sortKey(a, b)
+local function sortKey(a: Item, b: Item): boolean
 	local key = SORT_MODES[sortIndex].key
 	if key == "wearAsc" and a.wear ~= b.wear then return a.wear < b.wear end
 	if key == "wearDesc" and a.wear ~= b.wear then return a.wear > b.wear end
@@ -517,7 +495,7 @@ end
 
 -- New inventory from the server: create rows for new parts, remove rows
 -- for parts that are gone, update the rest in place.
-local function setInventory(newInventory)
+local function setInventory(newInventory: { Item }?)
 	inventory = newInventory or {}
 
 	local present = {}
@@ -552,7 +530,7 @@ local dropHovered = false
 dropFrame.MouseEnter:Connect(function() dropHovered = true end)
 dropFrame.MouseLeave:Connect(function() dropHovered = false end)
 
-local function setDropdown(open)
+local function setDropdown(open: boolean)
 	dropdownOpen      = open
 	dropFrame.Visible = open
 end
@@ -579,7 +557,7 @@ end)
 
 -- ── Panel open / close ────────────────────────────────────────────────────────
 
-local function setPanelOpen(open)
+local function setPanelOpen(open: boolean)
 	panelOpen       = open
 	arrowLabel.Text = open and "▶" or "◀"
 	updateBadge()
@@ -645,7 +623,7 @@ inventoryUpdated.OnClientEvent:Connect(setInventory)
 
 -- GhostSystem removes a part from the list straight away when you reinstall
 -- it; the server's next InventoryUpdated confirms (or restores) it.
-removeFromListEvent.Event:Connect(function(itemId)
+ClientSignals.ReinstallRequested:Connect(function(itemId)
 	local remaining = {}
 	for _, item in ipairs(inventory) do
 		if item.id ~= itemId then table.insert(remaining, item) end

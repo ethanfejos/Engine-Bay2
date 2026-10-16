@@ -1,3 +1,4 @@
+--!strict
 --[[
     WearDisplay (ModuleScript)
     --------------------------
@@ -17,11 +18,12 @@ local MAX_DIST        = 16
 local PULSE_THRESHOLD = 30
 local PULSE_SPEED     = 2 * math.pi
 
+local GUIBuilder = require(script.Parent:WaitForChild("GUIBuilder"))
 local WearColors = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("WearColors"))
 local wearColor  = WearColors.Gradient
 
 -- Animate bar from 0 to the wear value over 0.6s on first reveal
-local function animateBarIn(labels, wear)
+local function animateBarIn(labels: GUIBuilder.Labels, wear: number)
 	local fill      = labels.barFill
 	local color     = wearColor(wear)
 	local target    = math.max(wear / 100, 0.02)
@@ -35,13 +37,13 @@ local function animateBarIn(labels, wear)
 	):Play()
 end
 
-function WearDisplay.Start(model, labels, part)
+function WearDisplay.Start(model: Model, labels: GUIBuilder.Labels, part: BasePart): RBXScriptConnection
 	local pulseTime = 0
 
-	local conn = RunService.RenderStepped:Connect(function(delta)
+	local conn = RunService.RenderStepped:Connect(function(delta: number)
 		if not labels or not model or not model.Parent then return end
 
-		local wear  = model:GetAttribute("Wear") or 100
+		local wear  = tonumber(model:GetAttribute("Wear")) or 100
 		local color = wearColor(wear)
 
 		-- Update wear label
@@ -78,7 +80,7 @@ function WearDisplay.Start(model, labels, part)
 	end)
 
 	-- Animate bar in on start
-	local wear = model:GetAttribute("Wear") or 100
+	local wear = tonumber(model:GetAttribute("Wear")) or 100
 	animateBarIn(labels, wear)
 
 	return conn

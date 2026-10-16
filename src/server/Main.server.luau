@@ -1,3 +1,4 @@
+--!strict
 --[[
     Main (Script) — the only server Script
     --------------------------------------
@@ -13,10 +14,16 @@
     start — one broken system shouldn't take down the whole server.
 ]]
 
-local Services = script.Parent:WaitForChild("Services")
-local Modules  = script.Parent:WaitForChild("Modules")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Services      = script.Parent:WaitForChild("Services")
+local Modules       = script.Parent:WaitForChild("Modules")
+local SharedModules = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules")
+
+local log = require(SharedModules:WaitForChild("Log")).new("Main")
 
 local ORDER = {
+	{ SharedModules, "Remotes" },      -- creates every RemoteEvent first
 	{ Modules,  "ProfileManager" },    -- saving; everything below uses it
 	{ Services, "ZoneService" },       -- zone enter/leave signals
 	{ Services, "InventoryService" },
@@ -33,7 +40,7 @@ for _, entry in ipairs(ORDER) do
 	local folder, name = entry[1], entry[2]
 	local module = folder:FindFirstChild(name)
 	if not module then
-		warn("[Main] Missing service:", name)
+		log.warn("Missing service:", name)
 		failed += 1
 		continue
 	end
@@ -41,9 +48,9 @@ for _, entry in ipairs(ORDER) do
 	if ok then
 		started += 1
 	else
-		warn("[Main] " .. name .. " failed to start:", err)
+		log.warn(name .. " failed to start:", err)
 		failed += 1
 	end
 end
 
-print(("[Main] Server started: %d services, %d failed"):format(started, failed))
+log.info(("Server started: %d services, %d failed"):format(started, failed))

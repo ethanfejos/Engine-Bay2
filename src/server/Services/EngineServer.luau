@@ -1,3 +1,4 @@
+--!strict
 --[[
     EngineServer (ModuleScript, started by Main)
     --------------------------------------------
@@ -92,18 +93,9 @@ end
 
 -- ── Remote Events ─────────────────────────────────────────────────────────────
 
-local function getOrCreate(parent, className, name)
-	local existing = parent:FindFirstChild(name)
-	if existing then return existing end
-	local inst  = Instance.new(className)
-	inst.Name   = name
-	inst.Parent = parent
-	return inst
-end
-
-local remoteFolder      = getOrCreate(ReplicatedStorage, "Folder", "RemoteEvents")
-local removeEvent       = getOrCreate(remoteFolder, "RemoteEvent", "RemovePart")
-local partRemovingEvent = getOrCreate(remoteFolder, "RemoteEvent", "PartRemoving")
+local Remotes = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Remotes"))
+local removeEvent       = Remotes.RemovePart
+local partRemovingEvent = Remotes.PartRemoving
 
 -- ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -208,7 +200,7 @@ removeEvent.OnServerEvent:Connect(function(player, model)
 	-- Capture data before destroy
 	local modelName    = model.Name
 	local engineName   = engine.Name
-	local wear         = model:GetAttribute("Wear") or 100
+	local wear         = tonumber(model:GetAttribute("Wear")) or 100
 
 	-- Calculate CFrame relative to engine pivot
 	local enginePivot  = engine:GetPivot()

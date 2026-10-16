@@ -1,3 +1,4 @@
+--!strict
 --[[
     WearColors (ModuleScript, shared)
     ---------------------------------

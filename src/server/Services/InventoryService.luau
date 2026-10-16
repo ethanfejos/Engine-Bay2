@@ -1,3 +1,4 @@
+--!strict
 --[[
     InventoryService (ModuleScript, started by Main)
     ------------------------------------------------
@@ -30,21 +31,16 @@ local PartRules      = require(ReplicatedStorage:WaitForChild("Shared"):WaitForC
 
 -- ── Remotes ───────────────────────────────────────────────────────────────────
 
-local function getOrCreate(parent, className, name)
-	local existing = parent:FindFirstChild(name)
-	if existing then return existing end
-	local inst  = Instance.new(className)
-	inst.Name   = name
-	inst.Parent = parent
-	return inst
-end
+local Types = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Types"))
 
-local remoteFolder         = getOrCreate(ReplicatedStorage, "Folder", "RemoteEvents")
-local inventoryUpdated     = getOrCreate(remoteFolder, "RemoteEvent", "InventoryUpdated")
-local reinstallEvent       = getOrCreate(remoteFolder, "RemoteEvent", "ReinstallPart")
-local requestInventory     = getOrCreate(remoteFolder, "RemoteEvent", "RequestInventory")
-local partReinstalledEvent = getOrCreate(remoteFolder, "RemoteEvent", "PartReinstalled")
-local clearInventory       = getOrCreate(remoteFolder, "RemoteEvent", "ClearInventory")
+type Item = Types.InventoryItem
+
+local Remotes = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Remotes"))
+local inventoryUpdated     = Remotes.InventoryUpdated
+local reinstallEvent       = Remotes.ReinstallPart
+local requestInventory     = Remotes.RequestInventory
+local partReinstalledEvent = Remotes.PartReinstalled
+local clearInventory       = Remotes.ClearInventory
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -52,7 +48,8 @@ local clearInventory       = getOrCreate(remoteFolder, "RemoteEvent", "ClearInve
 
 local InventoryService = {}
 
-function InventoryService.AddPart(player, partName, wear, engineName, relativeData, itemId)
+function InventoryService.AddPart(player: Player, partName: string, wear: number, engineName: string,
+	relativeData: Types.RelativeData?, itemId: string)
 	local profile = ProfileService.GetProfile(player)
 	if not profile then return end
 
@@ -72,7 +69,7 @@ function InventoryService.AddPart(player, partName, wear, engineName, relativeDa
 	inventoryUpdated:FireClient(player, profile.Data.inventory)
 end
 
-function InventoryService.RemovePart(player, itemId)
+function InventoryService.RemovePart(player: Player, itemId: string): Item?
 	local profile = ProfileService.GetProfile(player)
 	if not profile then return end
 
@@ -86,7 +83,7 @@ function InventoryService.RemovePart(player, itemId)
 	return nil
 end
 
-function InventoryService.HasPartById(player, itemId)
+function InventoryService.HasPartById(player: Player, itemId: any): (boolean, Item?)
 	local inventory = InventoryService.GetInventory(player)
 	for _, item in ipairs(inventory) do
 		if item.id == itemId then
@@ -96,13 +93,13 @@ function InventoryService.HasPartById(player, itemId)
 	return false, nil
 end
 
-function InventoryService.GetInventory(player)
+function InventoryService.GetInventory(player: Player): { Item }
 	local profile = ProfileService.GetProfile(player)
 	if not profile then return {} end
 	return profile.Data.inventory
 end
 
-function InventoryService.HasPart(player, partName, engineName)
+function InventoryService.HasPart(player: Player, partName: string, engineName: string): (boolean, Item?)
 	local inventory = InventoryService.GetInventory(player)
 	for _, item in ipairs(inventory) do
 		if item.name == partName and item.engineName == engineName then
@@ -137,7 +134,7 @@ end)
 -- until rejoin.
 --   status "BLOCKED" -> detail = name of the part that must go back in first
 --   status "FAILED"  -> detail = short reason, for Output / future UI
-local function rejectReinstall(player, status, detail)
+local function rejectReinstall(player: Player, status: string, detail: string)
 	reinstallEvent:FireClient(player, status, detail)
 	inventoryUpdated:FireClient(player, InventoryService.GetInventory(player))
 end
@@ -145,7 +142,7 @@ end
 reinstallEvent.OnServerEvent:Connect(function(player, itemId)
 	-- Validate player has this item by id
 	local hasPart, item = InventoryService.HasPartById(player, itemId)
-	if not hasPart then
+	if not hasPart or not item then
 		warn("[InventoryService] Player", player.Name, "tried to reinstall item they don't have:", itemId)
 		rejectReinstall(player, "FAILED", "not in inventory")
 		return
@@ -207,8 +204,8 @@ reinstallEvent.OnServerEvent:Connect(function(player, itemId)
 	clone.Parent = engine
 
 	-- Apply relative CFrame to position correctly relative to engine pivot
-	if item.relativeData then
-		local rd  = item.relativeData
+	local rd = item.relativeData
+	if rd then
 		local relativeCF = CFrame.new(rd.x, rd.y, rd.z)
 			* CFrame.fromEulerAnglesXYZ(rd.rx, rd.ry, rd.rz)
 		clone:PivotTo(engine:GetPivot() * relativeCF)

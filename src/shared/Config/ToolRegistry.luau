@@ -1,3 +1,4 @@
+--!strict
 --[[
     ToolRegistry (ModuleScript)
     ---------------------------
@@ -13,26 +14,28 @@
     ZoneUtils.GetEngineInZone).
 ]]
 
-local registry = {
+type ZoneTypeEntry = { tools: { string } }
+
+local zoneTypes: { [string]: ZoneTypeEntry } = {
 	Mechanic = { tools = { "InspectionTool", "Wrench" } },
 	Paint    = { tools = {} }, -- add paint tools here once they exist
 }
 
+local registry = {}
+
 -- ── Registry Queries ──────────────────────────────────────────────────────────
 
-function registry.GetAllZoneTypes()
+function registry.GetAllZoneTypes(): { string }
 	local types = {}
-	for zoneType, data in pairs(registry) do
-		if type(data) == "table" and data.tools then
-			table.insert(types, zoneType)
-		end
+	for zoneType in pairs(zoneTypes) do
+		table.insert(types, zoneType)
 	end
 	return types
 end
 
-function registry.GetToolsForType(zoneType)
-	local entry = zoneType and registry[zoneType]
-	if type(entry) == "table" and entry.tools then
+function registry.GetToolsForType(zoneType: string?): { string }
+	local entry = zoneType and zoneTypes[zoneType]
+	if entry then
 		return entry.tools
 	end
 	return {}

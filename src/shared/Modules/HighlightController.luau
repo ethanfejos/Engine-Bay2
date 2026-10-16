@@ -1,3 +1,4 @@
+--!strict
 --[[
     HighlightController (ModuleScript, client-only)
     -----------------------------------------------
@@ -39,12 +40,15 @@ local HC = {}
 local MAX_HIGHLIGHTS_GLOBAL   = 255
 local MAX_HIGHLIGHTS_PER_TOOL = 50
 
-HC._highlightsByTool   = {}  -- [toolName][instance] = Highlight  (weak-key per tool)
-HC._cleanupConnections = {}  -- [toolName][instance] = { RBXScriptConnection, ... }
-HC._count              = 0
-HC._countByTool        = {}
+type HighlightMap  = { [Instance]: Highlight }
+type ConnectionMap = { [Instance]: { RBXScriptConnection } }
 
-local _highlightFolder = nil
+HC._highlightsByTool   = {} :: { [string]: HighlightMap }   -- [toolName][instance] = Highlight  (weak-key per tool)
+HC._cleanupConnections = {} :: { [string]: ConnectionMap }  -- [toolName][instance] = { RBXScriptConnection, ... }
+HC._count              = 0
+HC._countByTool        = {} :: { [string]: number }
+
+local _highlightFolder: Instance? = nil
 
 -- ──────────────────────────────────────────────────────────────
 -- Internal helpers
@@ -52,7 +56,7 @@ local _highlightFolder = nil
 
 -- Lazy, no-yield fetch. FindFirstChildOfClass never yields — safe to call
 -- from inside Create after counts have already been incremented.
-local function getHighlightFolder()
+local function getHighlightFolder(): Instance?
 	if _highlightFolder and _highlightFolder.Parent then
 		return _highlightFolder
 	end
@@ -71,9 +75,10 @@ local function getHighlightFolder()
 
 	local folder = playerGui:FindFirstChild("Highlights")
 	if not folder then
-		folder        = Instance.new("Folder")
-		folder.Name   = "Highlights"
-		folder.Parent = playerGui
+		local newFolder  = Instance.new("Folder")
+		newFolder.Name   = "Highlights"
+		newFolder.Parent = playerGui
+		folder = newFolder
 	end
 
 	_highlightFolder = folder
@@ -86,7 +91,7 @@ local DEFAULT_COLOR = Color3.new(1, 0, 0)
 -- red". A colour of the WRONG TYPE (e.g. a BrickColor) is refused with a
 -- warning instead of quietly turning red, so the mistake shows up in testing
 -- as a missing highlight rather than hiding behind a plausible-looking one.
-local function validateParams(toolName, instance, color)
+local function validateParams(toolName: any, instance: any, color: any): (boolean, Color3?)
 	if type(toolName) ~= "string" or toolName == "" then
 		return false, nil
 	end
@@ -107,7 +112,7 @@ end
 -- Disconnect and discard stored connections for one slot.
 -- Always nils toolConns[instance] — even if no connections were stored —
 -- so _cleanupConnections stays in sync after a weak-table GC eviction.
-local function disconnectCleanup(toolName, instance)
+local function disconnectCleanup(toolName: string, instance: Instance)
 	local toolConns = HC._cleanupConnections[toolName]
 	if not toolConns then return end
 
@@ -126,12 +131,12 @@ local function disconnectCleanup(toolName, instance)
 end
 
 -- Makes sure the bookkeeping tables for a key exist.
-local function ensureTool(toolName)
+local function ensureTool(toolName: string)
 	if not HC._highlightsByTool[toolName] then
 		-- Weak keys: if an instance is GC'd without going through removeSlot
 		-- (connections handle this normally, this is the final safety net),
 		-- the entry evaporates automatically rather than pinning the instance.
-		HC._highlightsByTool[toolName] = setmetatable({}, { __mode = "k" })
+		HC._highlightsByTool[toolName] = setmetatable({}, { __mode = "k" }) :: any
 	end
 	HC._cleanupConnections[toolName] = HC._cleanupConnections[toolName] or {}
 	HC._countByTool[toolName]        = HC._countByTool[toolName]        or 0
@@ -148,10 +153,10 @@ end
 --
 -- Safe to call twice: the slot is emptied BEFORE anything else happens, so a
 -- re-entrant call (e.g. Destroy firing Destroying) finds nothing and returns.
-local function removeSlot(toolName, instance, shouldDestroy)
+local function removeSlot(toolName: string, instance: Instance, shouldDestroy: boolean)
 	local toolHighlights = HC._highlightsByTool[toolName]
 	if not toolHighlights then return end
-	local h = toolHighlights[instance]
+	local h: Highlight? = toolHighlights[instance]
 	if h == nil then return end
 
 	toolHighlights[instance] = nil
@@ -172,8 +177,8 @@ end
 
 -- Snapshot of a key's instances, so callers can remove slots while looping
 -- without mutating a table pairs() is walking.
-local function instancesOf(toolName)
-	local list = {}
+local function instancesOf(toolName: string): { Instance }
+	local list: { Instance } = {}
 	local toolHighlights = HC._highlightsByTool[toolName]
 	if toolHighlights then
 		for instance in pairs(toolHighlights) do
@@ -188,19 +193,19 @@ end
 -- ──────────────────────────────────────────────────────────────
 
 -- Remove a single instance's highlight. Safe to call when it has none.
-function HC.ClearInstance(toolName, instance)
+function HC.ClearInstance(toolName: string, instance: Instance)
 	removeSlot(toolName, instance, true)
 end
 
-function HC.Create(toolName, instance, color, outlineTransparency,
-	fillTransparency, depthMode)
+function HC.Create(toolName: string, instance: Instance, color: Color3?, outlineTransparency: number?,
+	fillTransparency: number?, depthModeArg: Enum.HighlightDepthMode?): Highlight?
 
 	local valid, clr = validateParams(toolName, instance, color)
-	if not valid then return nil end
+	if not valid or not clr then return nil end
 
-	outlineTransparency = outlineTransparency ~= nil and outlineTransparency or 0
-	fillTransparency    = fillTransparency    ~= nil and fillTransparency    or 1
-	depthMode           = depthMode or Enum.HighlightDepthMode.AlwaysOnTop
+	local outline   = if outlineTransparency ~= nil then outlineTransparency else 0
+	local fill      = if fillTransparency ~= nil then fillTransparency else 1
+	local depthMode = depthModeArg or Enum.HighlightDepthMode.AlwaysOnTop
 
 	ensureTool(toolName)
 
@@ -212,8 +217,8 @@ function HC.Create(toolName, instance, color, outlineTransparency,
 		existing.Enabled             = false
 		existing.FillColor           = clr
 		existing.OutlineColor        = clr
-		existing.FillTransparency    = fillTransparency
-		existing.OutlineTransparency = outlineTransparency
+		existing.FillTransparency    = fill
+		existing.OutlineTransparency = outline
 		existing.DepthMode           = depthMode
 		existing.Enabled             = true
 		return existing
@@ -249,8 +254,8 @@ function HC.Create(toolName, instance, color, outlineTransparency,
 	h.Adornee             = instance
 	h.FillColor           = clr
 	h.OutlineColor        = clr
-	h.FillTransparency    = fillTransparency
-	h.OutlineTransparency = outlineTransparency
+	h.FillTransparency    = fill
+	h.OutlineTransparency = outline
 	h.DepthMode           = depthMode
 
 	h.Parent  = folder
@@ -288,7 +293,7 @@ function HC.Create(toolName, instance, color, outlineTransparency,
 	return h
 end
 
-function HC.CreateStencil(toolName, instance, color)
+function HC.CreateStencil(toolName: string, instance: Instance, color: Color3?): Highlight?
 	return HC.Create(toolName, instance, color, 0, 1,
 		Enum.HighlightDepthMode.AlwaysOnTop)
 end
@@ -296,13 +301,13 @@ end
 -- Restyles an existing highlight. Arguments left as nil keep their current
 -- value. A colour of the wrong type is refused (nothing changes) with a
 -- warning, matching Create.
-function HC.Update(toolName, instance, color, outlineTransparency,
-	fillTransparency, depthMode)
+function HC.Update(toolName: string, instance: Instance, color: Color3?, outlineTransparency: number?,
+	fillTransparency: number?, depthMode: Enum.HighlightDepthMode?): Highlight?
 
 	local toolHighlights = HC._highlightsByTool[toolName]
-	if not toolHighlights then return end
+	if not toolHighlights then return nil end
 	local h = toolHighlights[instance]
-	if not h or not h.Parent then return end
+	if not h or not h.Parent then return nil end
 
 	if color ~= nil and typeof(color) ~= "Color3" then
 		warn("[HighlightController] Refused Update: color must be a Color3, got", typeof(color), "for key:", toolName)
@@ -320,14 +325,14 @@ function HC.Update(toolName, instance, color, outlineTransparency,
 	return h
 end
 
-function HC.UpdateStencil(toolName, instance, color)
+function HC.UpdateStencil(toolName: string, instance: Instance, color: Color3?): Highlight?
 	return HC.Update(toolName, instance, color, 0, 1,
 		Enum.HighlightDepthMode.AlwaysOnTop)
 end
 
 -- Restyles every highlight under a key in one call (warning flash,
 -- inspection mode, etc.). Any dead highlight found on the way is removed.
-function HC.UpdateAll(toolName, color, outlineTransparency, fillTransparency, depthMode)
+function HC.UpdateAll(toolName: string, color: Color3?, outlineTransparency: number?, fillTransparency: number?, depthMode: Enum.HighlightDepthMode?)
 	if color ~= nil and typeof(color) ~= "Color3" then
 		warn("[HighlightController] Refused UpdateAll: color must be a Color3, got", typeof(color), "for key:", toolName)
 		return
@@ -351,7 +356,7 @@ function HC.UpdateAll(toolName, color, outlineTransparency, fillTransparency, de
 end
 
 -- Removes every highlight under one key.
-function HC.Clear(toolName)
+function HC.Clear(toolName: string)
 	for _, instance in ipairs(instancesOf(toolName)) do
 		removeSlot(toolName, instance, true)
 	end
@@ -359,7 +364,7 @@ end
 
 -- Removes every highlight under every key.
 function HC.ClearAll()
-	local toolNames = {}
+	local toolNames: { string } = {}
 	for toolName in pairs(HC._highlightsByTool) do
 		toolNames[#toolNames + 1] = toolName
 	end
@@ -369,11 +374,11 @@ function HC.ClearAll()
 end
 
 -- True only if the slot exists AND its highlight is still alive.
-function HC.Has(toolName, instance)
+function HC.Has(toolName: string?, instance: Instance?): boolean
 	if not toolName or not instance then return false end
 	local t = HC._highlightsByTool[toolName]
 	if not t then return false end
-	local h = t[instance]
+	local h: Highlight? = t[instance]
 	return h ~= nil and h.Parent ~= nil
 end
 
@@ -381,7 +386,7 @@ end
 -- the highlights that actually exist. Not on the hot path; call from a
 -- debug command if the counts ever look wrong.
 function HC.Recount()
-	local toolNames = {}
+	local toolNames: { string } = {}
 	for toolName in pairs(HC._highlightsByTool) do
 		toolNames[#toolNames + 1] = toolName
 	end
@@ -395,7 +400,7 @@ function HC.Recount()
 		end
 	end
 
-	local globalCount, perTool = 0, {}
+	local globalCount, perTool = 0, {} :: { [string]: number }
 	for toolName, toolHighlights in pairs(HC._highlightsByTool) do
 		local count = 0
 		for _ in pairs(toolHighlights) do
@@ -408,7 +413,7 @@ function HC.Recount()
 	HC._countByTool = perTool
 end
 
-function HC.GetCount()               return HC._count end
-function HC.GetCountByTool(toolName) return HC._countByTool[toolName] or 0 end
+function HC.GetCount(): number                 return HC._count end
+function HC.GetCountByTool(toolName: string): number return HC._countByTool[toolName] or 0 end
 
 return HC

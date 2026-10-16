@@ -1,3 +1,4 @@
+--!strict
 --[[
     CustomPromptManager (LocalScript)
     ---------------------------------
@@ -19,15 +20,19 @@
 local ProximityPromptService = game:GetService("ProximityPromptService")
 local TweenService           = game:GetService("TweenService")
 local Players                = game:GetService("Players")
+local ReplicatedStorage      = game:GetService("ReplicatedStorage")
 
 local player    = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
+local UITheme = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("UI"):WaitForChild("UITheme"))
+local F       = UITheme.Fonts
+
 local COLORS = {
-	Main   = Color3.fromRGB(255, 255, 255),
-	Accent = Color3.fromRGB(0, 255, 150),
-	Text   = Color3.fromRGB(255, 255, 255),
-	Dark   = Color3.fromRGB(20, 20, 20),
+	Main   = UITheme.Colors.Text,
+	Accent = UITheme.Colors.Accent,
+	Text   = UITheme.Colors.Text,
+	Dark   = UITheme.Colors.Dark,
 }
 
 local TWEEN_FILL_OUT = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
@@ -61,7 +66,7 @@ local function createPromptUI(prompt)
 	keyFrame.BackgroundColor3      = COLORS.Main
 	keyFrame.BackgroundTransparency = 0.1
 	keyFrame.Parent                = mainFrame
-	Instance.new("UICorner", keyFrame).CornerRadius = UDim.new(0, 6)
+	UITheme.Corner(keyFrame, UITheme.Radius.Large)
 
 	-- Hold progress fill
 	local keyFill = Instance.new("Frame")
@@ -74,13 +79,13 @@ local function createPromptUI(prompt)
 	keyFill.BorderSizePixel       = 0
 	keyFill.ZIndex                = 2
 	keyFill.Parent                = keyFrame
-	Instance.new("UICorner", keyFill).CornerRadius = UDim.new(0, 6)
+	UITheme.Corner(keyFill, UITheme.Radius.Large)
 
 	-- Key label
 	local keyLabel = Instance.new("TextLabel")
 	keyLabel.Size                  = UDim2.new(1, 0, 1, 0)
 	keyLabel.BackgroundTransparency = 1
-	keyLabel.Font                  = Enum.Font.GothamBold
+	keyLabel.Font                  = F.Bold
 	keyLabel.TextColor3            = COLORS.Dark
 	keyLabel.TextSize              = 22
 	keyLabel.Text                  = prompt.KeyboardKeyCode.Name
@@ -101,7 +106,7 @@ local function createPromptUI(prompt)
 	actionLabel.Size             = UDim2.new(0, 150, 1, 0)
 	actionLabel.Position         = UDim2.new(0, 80, 0, 0)
 	actionLabel.BackgroundTransparency = 1
-	actionLabel.Font             = Enum.Font.RobotoMono
+	actionLabel.Font             = F.Mono
 	actionLabel.Text             = prompt.ActionText:upper()
 	actionLabel.TextColor3       = COLORS.Text
 	actionLabel.TextSize         = 18
@@ -123,7 +128,7 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
 	if prompt.Style ~= Enum.ProximityPromptStyle.Custom then return end
 
 	local gui, btn, keyFill = createPromptUI(prompt)
-	local holdTween   = nil
+	local holdTween: Tween? = nil
 	local mouseDown   = false -- this prompt is being held with the mouse
 	local connections = {}
 
@@ -154,10 +159,11 @@ ProximityPromptService.PromptShown:Connect(function(prompt)
 	-- prompts with a HoldDuration above 0).
 	table.insert(connections, prompt.PromptButtonHoldBegan:Connect(function()
 		if holdTween then holdTween:Cancel() end
-		holdTween = TweenService:Create(keyFill,
+		local tween = TweenService:Create(keyFill,
 			TweenInfo.new(prompt.HoldDuration, Enum.EasingStyle.Linear),
 			{ Size = UDim2.new(1, 0, 1, 0) })
-		holdTween:Play()
+		holdTween = tween
+		tween:Play()
 	end))
 	table.insert(connections, prompt.PromptButtonHoldEnded:Connect(resetFill))
 	table.insert(connections, prompt.Triggered:Connect(resetFill))

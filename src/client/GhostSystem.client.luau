@@ -1,9 +1,10 @@
+--!strict
 --[[
     GhostSystem (LocalScript)
     -------------------------
     Manages ghost meshes for missing engine parts.
     
-    - Listens to InventoryUI selection changes
+    - Listens to InventoryUI selection changes (ClientSignals.PartSelected)
     - When a part is selected, finds its ghost in the engine
     - Ghost only shows if the part it depends on is physically present
     - Shows white stencil highlight on the ghost
@@ -24,23 +25,12 @@ local EngineContext  = require(Modules:WaitForChild("EngineContext"))
 local HC             = require(Modules:WaitForChild("HighlightController"))
 local ZoneUtils      = require(Modules:WaitForChild("ZoneUtils"))
 local PartRules      = require(Modules:WaitForChild("PartRules"))
+local Remotes        = require(Modules:WaitForChild("Remotes"))
+local ClientSignals  = require(Modules:WaitForChild("ClientSignals"))
+local Types          = require(Modules:WaitForChild("Types"))
 
-local remoteFolder   = ReplicatedStorage:WaitForChild("RemoteEvents")
-local reinstallEvent = remoteFolder:WaitForChild("ReinstallPart")
+local reinstallEvent = Remotes.ReinstallPart
 local templateFolder = ReplicatedStorage:WaitForChild("EnginePartTemplates")
-
--- Communication with InventoryUI via BindableEvents in ReplicatedStorage
-local function getOrCreateBindable(name)
-	local existing = ReplicatedStorage:FindFirstChild(name)
-	if existing then return existing end
-	local b = Instance.new("BindableEvent")
-	b.Name   = name
-	b.Parent = ReplicatedStorage
-	return b
-end
-
-local selectionChangedEvent = getOrCreateBindable("GhostSelectionChanged")
-local removeFromListEvent   = getOrCreateBindable("GhostRemoveFromList")
 
 -- ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -50,19 +40,20 @@ local GHOST_TRANSPARENCY = 0.5  -- must be below 1 for Highlight stencil to rend
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 
-local activeGhost      = nil
-local activeSelection  = nil
-local selectedPart     = nil
-local selectedEngine   = nil
-local selectedRelData  = nil
-local selectedItemId   = nil
+type RelativeData = Types.RelativeData
+
+local activeGhost: Instance?            = nil
+local selectedPart: string?             = nil
+local selectedEngine: string?           = nil
+local selectedRelData: RelativeData?    = nil
+local selectedItemId: string?           = nil
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
 -- The engine a ghost belongs to is whatever is parked in the bay the player
 -- is standing in (any car, any engine) — not a fixed engine in a fixed folder.
 -- It only counts if its name matches the engine the selected part came from.
-local function getEngine(engineName)
+local function getEngine(engineName: string): Model?
 	local engine = ZoneUtils.GetEngineForPlayer(player)
 	if engine and engine.Name == engineName then
 		return engine
@@ -70,7 +61,7 @@ local function getEngine(engineName)
 	return nil
 end
 
-local function findTemplate(partName, engineName)
+local function findTemplate(partName: string, engineName: string): Instance?
 	local engineFolder = templateFolder:FindFirstChild(engineName)
 	if not engineFolder then
 		warn("[GhostSystem] No template folder for engine:", engineName)
@@ -81,7 +72,7 @@ end
 
 -- Same rule the server enforces on reinstall (PartRules): everything this
 -- part Requires must already be back in the engine.
-local function canShowGhost(partName, engineName, engine)
+local function canShowGhost(partName: string, engineName: string, engine: Model): boolean
 	local template = findTemplate(partName, engineName)
 	if not template then return false end
 	return PartRules.GetReinstallBlocker(template, engine) == nil
@@ -91,16 +82,15 @@ local function clearGhost()
 	if activeGhost then
 		HC.Clear(GHOST_KEY)
 		activeGhost:Destroy()
-		activeGhost     = nil
-		activeSelection = nil
+		activeGhost = nil
 	end
 end
 
-local function showGhost(partName, engineName, engine, relativeData)
+local function showGhost(partName: string, engineName: string, engine: Model, relativeData: RelativeData?)
 	clearGhost()
 
 	local template = findTemplate(partName, engineName)
-	if not template then return end
+	if not template or not template:IsA("PVInstance") then return end
 
 	local ghost = template:Clone()
 	ghost.Name  = partName .. "_Ghost"
@@ -141,7 +131,7 @@ local function showGhost(partName, engineName, engine, relativeData)
 	HC.CreateStencil(GHOST_KEY, ghost, GHOST_COLOR)
 end
 
-local function onSelectionChanged(itemId, partName, engineName, relativeData)
+local function onSelectionChanged(itemId: string?, partName: string?, engineName: string?, relativeData: RelativeData?)
 	selectedItemId   = itemId
 	selectedPart     = partName
 	selectedEngine   = engineName
@@ -159,7 +149,7 @@ local function onSelectionChanged(itemId, partName, engineName, relativeData)
 	end
 end
 
-selectionChangedEvent.Event:Connect(onSelectionChanged)
+ClientSignals.PartSelected:Connect(onSelectionChanged)
 
 -- ── Reinstall Input ───────────────────────────────────────────────────────────
 
@@ -179,7 +169,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
 
 	-- Optimistically clear ghost and deselect
 	clearGhost()
-	removeFromListEvent:Fire(selectedItemId)
+	ClientSignals.ReinstallRequested:Fire(selectedItemId)
 end)
 
 -- ── Listen for server BLOCKED response ───────────────────────────────────────

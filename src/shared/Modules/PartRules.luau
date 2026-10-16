@@ -1,3 +1,4 @@
+--!strict
 --[[
     PartRules (ModuleScript, shared)
     --------------------------------
@@ -26,32 +27,32 @@ local PartRules = {}
 PartRules.INSPECT_DWELL_TIME = 2
 
 -- "a, b ,c" -> { "a", "b", "c" }; empty or missing -> {}
-function PartRules.ParseRequires(requires)
+function PartRules.ParseRequires(requires: any): { string }
 	local names = {}
 	if type(requires) ~= "string" or requires == "" then
 		return names
 	end
-	for _, name in ipairs(requires:split(",")) do
-		name = name:match("^%s*(.-)%s*$")
-		if name ~= "" then
+	for _, raw in ipairs(string.split(requires, ",")) do
+		local name = string.match(raw, "^%s*(.-)%s*$")
+		if name and name ~= "" then
 			table.insert(names, name)
 		end
 	end
 	return names
 end
 
-function PartRules.IsBolt(model)
+function PartRules.IsBolt(model: Instance): boolean
 	return model:GetAttribute("IsBolt") == true
 end
 
-function PartRules.IsInspectable(model)
+function PartRules.IsInspectable(model: Instance): boolean
 	return model:GetAttribute("Inspectable") == true
 end
 
 -- What's stopping `model` being removed from its engine right now, or nil
 -- if nothing is. Returns the name of the part (or bolt) that has to come
 -- off first.
-function PartRules.GetRemovalBlocker(model)
+function PartRules.GetRemovalBlocker(model: Instance): string?
 	local engine = model.Parent
 	if engine then
 		for _, name in ipairs(PartRules.ParseRequires(model:GetAttribute("Requires"))) do
@@ -71,7 +72,7 @@ end
 -- What's stopping a part (described by its template) being reinstalled
 -- into `engine` right now, or nil if nothing is. Returns the name of the
 -- part that has to go back in first.
-function PartRules.GetReinstallBlocker(template, engine)
+function PartRules.GetReinstallBlocker(template: Instance, engine: Instance): string?
 	for _, name in ipairs(PartRules.ParseRequires(template:GetAttribute("Requires"))) do
 		if not engine:FindFirstChild(name) then
 			return name
@@ -85,11 +86,11 @@ end
 -- name + part name, so a reinstalled part stays inspected.
 -- Known limit: two cars with the same engine name share inspection
 -- progress. Switch to a per-car id once cars have one.
-function PartRules.InspectKey(engineName, partName)
+function PartRules.InspectKey(engineName: string, partName: string): string
 	return engineName .. ":" .. partName
 end
 
-function PartRules.InspectKeyForModel(model)
+function PartRules.InspectKeyForModel(model: Instance): string?
 	local engine = model.Parent
 	if not engine then return nil end
 	return PartRules.InspectKey(engine.Name, model.Name)

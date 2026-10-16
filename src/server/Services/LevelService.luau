@@ -1,3 +1,4 @@
+--!strict
 --[[
     LevelService (ModuleScript, started by Main)
     --------------------------------------------
@@ -42,6 +43,9 @@ local ProfileManager = require(script.Parent.Parent.Modules.ProfileManager)
 local LevelCurve      = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("LevelCurve"))
 local ZoneUtils       = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 local PartRules       = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("PartRules"))
+local Log             = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Log"))
+
+local log = Log.new("LevelService")
 
 -- ── XP Award Amounts ─────────────────────────────────────────────────────────
 
@@ -53,22 +57,13 @@ local XP_AWARDS = {
 
 -- ── Remotes ───────────────────────────────────────────────────────────────────
 
-local function getOrCreate(parent, className, name)
-	local existing = parent:FindFirstChild(name)
-	if existing then return existing end
-	local inst  = Instance.new(className)
-	inst.Name   = name
-	inst.Parent = parent
-	return inst
-end
-
-local remoteFolder     = getOrCreate(ReplicatedStorage, "Folder", "RemoteEvents")
-local xpUpdated        = getOrCreate(remoteFolder, "RemoteEvent", "XpUpdated")
-local leveledUp        = getOrCreate(remoteFolder, "RemoteEvent", "LeveledUp")
-local requestXp        = getOrCreate(remoteFolder, "RemoteEvent", "RequestXp")
-local partInspected    = getOrCreate(remoteFolder, "RemoteEvent", "PartInspected")
-local inspectStart     = getOrCreate(remoteFolder, "RemoteEvent", "InspectStart")
-local inspectedSync    = getOrCreate(remoteFolder, "RemoteEvent", "InspectedSync")
+local Remotes = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Remotes"))
+local xpUpdated        = Remotes.XpUpdated
+local leveledUp        = Remotes.LeveledUp
+local requestXp        = Remotes.RequestXp
+local partInspected    = Remotes.PartInspected
+local inspectStart     = Remotes.InspectStart
+local inspectedSync    = Remotes.InspectedSync
 
 -- ── Public API ────────────────────────────────────────────────────────────────
 
@@ -77,7 +72,7 @@ LevelService.XP_AWARDS = XP_AWARDS -- exposed so RepairService/EngineServer can 
 
 -- Sends this player's current xp/level/progress to their client. Safe to
 -- call any time — does nothing if the profile isn't loaded yet.
-local function pushXpToClient(player)
+local function pushXpToClient(player: Player)
 	local profile = ProfileManager.GetProfile(player)
 	if not profile then return end
 
@@ -87,7 +82,7 @@ end
 
 -- Awards `amount` XP to a player, saves it, and notifies their client.
 -- `reason` is only used for the Output log — purely diagnostic.
-function LevelService.AddXP(player, amount, reason)
+function LevelService.AddXP(player: Player, amount: number, reason: string?)
 	local profile = ProfileManager.GetProfile(player)
 	if not profile then return end
 	if type(amount) ~= "number" or amount <= 0 then return end
@@ -96,7 +91,7 @@ function LevelService.AddXP(player, amount, reason)
 	profile.Data.xp = profile.Data.xp + amount
 	local newLevel = LevelCurve.GetLevelInfo(profile.Data.xp)
 
-	print(("[LevelService] %s +%d XP (%s) — total %d"):format(
+	log.debug(("%s +%d XP (%s) — total %d"):format(
 		player.Name, amount, reason or "?", profile.Data.xp))
 
 	pushXpToClient(player)
@@ -144,7 +139,7 @@ local inspectStarts = {}
 -- The real, inspectable part the client is talking about, in the engine
 -- parked in the bay the player is standing in — or nil (with a reason) if
 -- the claim doesn't check out.
-local function resolvePart(player, engineName, partName)
+local function resolvePart(player: Player, engineName: any, partName: any): (Model?, string?)
 	if type(engineName) ~= "string" or type(partName) ~= "string" then
 		return nil, "bad arguments"
 	end
@@ -159,7 +154,7 @@ local function resolvePart(player, engineName, partName)
 	if not model or not model:IsA("Model") or not PartRules.IsInspectable(model) then
 		return nil, "not an inspectable part"
 	end
-	return model
+	return model, nil
 end
 
 inspectStart.OnServerEvent:Connect(function(player, engineName, partName)

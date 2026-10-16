@@ -1,3 +1,4 @@
+--!strict
 --[[
     PartPickupService (ModuleScript)
     --------------------------------
@@ -46,6 +47,7 @@ local ProfileManager   = require(script.Parent.Parent.Modules.ProfileManager)
 local ZoneUtils        = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 
 local ZoneService      = require(script.Parent.ZoneService)
+local Types            = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Types"))
 
 local droppedFolder = Workspace:FindFirstChild("DroppedParts")
 if not droppedFolder then
@@ -79,18 +81,28 @@ local STRIP_CLASSES = {
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 
--- [itemId] = { player, modelName, wear, engineName, relativeData, zoneName, instance, slotIndex }
-local droppedParts = {}
+type Drop = {
+	player: Player,
+	modelName: string,
+	wear: number,
+	engineName: string,
+	relativeData: Types.RelativeData?,
+	zoneName: string,
+	instance: Model,
+	slotIndex: number,
+}
+
+local droppedParts: { [string]: Drop } = {} -- [itemId]
 
 -- [zoneName] = { [slotIndex] = true } — spiral spots in use per bay, so a
 -- freed spot (part collected) gets reused.
-local activeSlotsByZone = {}
+local activeSlotsByZone: { [string]: { [number]: boolean } } = {}
 
 local PartPickupService = {}
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
-local function slotsFor(zoneName)
+local function slotsFor(zoneName: string): { [number]: boolean }
 	local slots = activeSlotsByZone[zoneName]
 	if not slots then
 		slots = {}
@@ -99,21 +111,21 @@ local function slotsFor(zoneName)
 	return slots
 end
 
-local function releaseSlot(zoneName, slotIndex)
+local function releaseSlot(zoneName: string, slotIndex: number?)
 	local slots = activeSlotsByZone[zoneName]
 	if slots and slotIndex then
 		slots[slotIndex] = nil
 	end
 end
 
-local function shouldStrip(inst)
+local function shouldStrip(inst: Instance): boolean
 	for _, className in ipairs(STRIP_CLASSES) do
 		if inst:IsA(className) then return true end
 	end
 	return false
 end
 
-local function clearAttributes(inst)
+local function clearAttributes(inst: Instance)
 	for name in pairs(inst:GetAttributes()) do
 		inst:SetAttribute(name, nil)
 	end
@@ -122,7 +134,7 @@ end
 -- Turns a clone of an engine part into a plain visual: no attributes (so
 -- nothing treats it as an engine part), no scripts/prompts/GUIs, no joints,
 -- anchored and non-collidable.
-local function makeVisualCopy(sourceModel)
+local function makeVisualCopy(sourceModel: Model): Model
 	local copy = sourceModel:Clone()
 	clearAttributes(copy)
 	for _, inst in ipairs(copy:GetDescendants()) do
@@ -142,19 +154,20 @@ local function makeVisualCopy(sourceModel)
 end
 
 -- Everything the floor and clearance checks should ignore.
-local function ignoreList(carRoot)
-	local list = { carRoot, droppedFolder }
+local function ignoreList(carRoot: Instance): { Instance }
+	local list: { Instance } = { carRoot, droppedFolder }
 	local zones = Workspace:FindFirstChild("EngineZones")
 	if zones then table.insert(list, zones) end
 	for _, p in ipairs(Players:GetPlayers()) do
-		if p.Character then table.insert(list, p.Character) end
+		local char = p.Character
+		if char then table.insert(list, char) end
 	end
 	return list
 end
 
 -- Is a world position inside the zone's footprint (ignoring height, since
 -- bay volumes don't always reach exactly to the floor)?
-local function insideBayFootprint(position, zone)
+local function insideBayFootprint(position: Vector3, zone: BasePart): boolean
 	local localPos = zone.CFrame:PointToObjectSpace(position)
 	return math.abs(localPos.X) <= zone.Size.X / 2
 		and math.abs(localPos.Z) <= zone.Size.Z / 2
@@ -162,7 +175,7 @@ end
 
 -- Height of the real floor below (x, z), or nil if there's none, or if what
 -- was hit sits too high to be the floor (a wall top, a shelf).
-local function findFloorY(x, z, carTopY, carBottomY, rayParams)
+local function findFloorY(x: number, z: number, carTopY: number, carBottomY: number, rayParams: RaycastParams): number?
 	local origin = Vector3.new(x, carTopY + 2, z)
 	local result = Workspace:Raycast(origin, Vector3.new(0, -((carTopY - carBottomY) + 2 + RAY_DEPTH), 0), rayParams)
 	if not result then return nil end
@@ -172,15 +185,17 @@ end
 
 -- Picks a spot and orientation for `dropClone` around the car. Returns the
 -- CFrame and the claimed spiral slot index.
-local function placeDrop(dropClone, sourceModel, zoneName)
-	local carRoot = ZoneUtils.GetTopLevelAncestor(sourceModel)
+local function placeDrop(dropClone: Model, sourceModel: Model, zoneName: string): (CFrame, number)
+	-- The whole car: always a Model, since sourceModel is one.
+	local carRoot = ZoneUtils.GetTopLevelAncestor(sourceModel) :: Model
 	local carCFrame, carSize = carRoot:GetBoundingBox()
 	local carBottomY = carCFrame.Position.Y - carSize.Y / 2
 	local carTopY    = carCFrame.Position.Y + carSize.Y / 2
 	local footprintRadius = math.sqrt(carSize.X ^ 2 + carSize.Z ^ 2) / 2 + DROP_CLEARANCE
 
 	local zonesFolder = Workspace:FindFirstChild("EngineZones")
-	local zone = zonesFolder and zonesFolder:FindFirstChild(zoneName)
+	local found = zonesFolder and zonesFolder:FindFirstChild(zoneName)
+	local zone  = if found and found:IsA("BasePart") then found else nil
 
 	local ignore = ignoreList(carRoot)
 	local rayParams = RaycastParams.new()
@@ -205,20 +220,20 @@ local function placeDrop(dropClone, sourceModel, zoneName)
 	local boundsCFrame, boundsSize = dropClone:GetBoundingBox()
 	local pivotToCentre = boundsCFrame.Position -- pivot is at the origin here
 
-	local function spotFor(index)
+	local function spotFor(index: number): (number, number)
 		local angle  = index * GOLDEN_ANGLE
 		local radius = footprintRadius + SPREAD_RING_RADIUS * math.sqrt(index - 1)
 		return carCFrame.Position.X + math.cos(angle) * radius,
 			carCFrame.Position.Z + math.sin(angle) * radius
 	end
 
-	local function cframeAt(x, z, floorY)
+	local function cframeAt(x: number, z: number, floorY: number): CFrame
 		local centreY = floorY + boundsSize.Y / 2 + GROUND_CLEARANCE
 		return CFrame.new(x - pivotToCentre.X, centreY - pivotToCentre.Y, z - pivotToCentre.Z) * orientation
 	end
 
 	local slots     = slotsFor(zoneName)
-	local firstFree = nil
+	local firstFree: number? = nil
 	local tried     = 0
 	local index     = 1
 	while tried < MAX_SPOT_TRIES do
@@ -251,7 +266,7 @@ end
 
 -- ── Saved record of a drop ────────────────────────────────────────────────────
 
-local function itemRecord(itemId, drop)
+local function itemRecord(itemId: string, drop: Drop): Types.InventoryItem
 	return {
 		id           = itemId,
 		name         = drop.modelName,
@@ -261,14 +276,14 @@ local function itemRecord(itemId, drop)
 	}
 end
 
-local function saveDropped(player, itemId, drop)
+local function saveDropped(player: Player, itemId: string, drop: Drop)
 	local profile = ProfileManager.GetProfile(player)
 	if profile then
 		profile.Data.dropped[itemId] = itemRecord(itemId, drop)
 	end
 end
 
-local function forgetDropped(player, itemId)
+local function forgetDropped(player: Player, itemId: string)
 	local profile = ProfileManager.GetProfile(player)
 	if profile then
 		profile.Data.dropped[itemId] = nil
@@ -280,7 +295,7 @@ end
 -- Moves a dropped part into its owner's inventory and removes it from the
 -- world. Safe to call more than once for the same itemId — the safety nets
 -- can race to collect the same part; only the first does anything.
-function PartPickupService.CollectPart(itemId)
+function PartPickupService.CollectPart(itemId: string)
 	local drop = droppedParts[itemId]
 	if not drop then return end
 	droppedParts[itemId] = nil
@@ -300,7 +315,8 @@ end
 
 -- Called by EngineServer while the removed part still exists, so its look
 -- and position can be copied.
-function PartPickupService.DropPart(player, sourceModel, modelName, wear, engineName, relativeData, itemId, zoneName)
+function PartPickupService.DropPart(player: Player, sourceModel: Model, modelName: string, wear: number,
+	engineName: string, relativeData: Types.RelativeData?, itemId: string, zoneName: string)
 	local dropClone = makeVisualCopy(sourceModel)
 	dropClone.Name  = modelName
 	dropClone:SetAttribute("OwnerUserId", player.UserId)
@@ -336,7 +352,7 @@ function PartPickupService.DropPart(player, sourceModel, modelName, wear, engine
 
 	dropClone.Parent = droppedFolder
 
-	droppedParts[itemId] = {
+	local drop: Drop = {
 		player       = player,
 		modelName    = modelName,
 		wear         = wear,
@@ -346,9 +362,10 @@ function PartPickupService.DropPart(player, sourceModel, modelName, wear, engine
 		instance     = dropClone,
 		slotIndex    = slotIndex,
 	}
-	saveDropped(player, itemId, droppedParts[itemId])
+	droppedParts[itemId] = drop
+	saveDropped(player, itemId, drop)
 
-	prompt.Triggered:Connect(function(triggeringPlayer)
+	prompt.Triggered:Connect(function(triggeringPlayer: Player)
 		-- Only the player who removed it can pick it up (the prompt is
 		-- hidden for everyone else, but never trust the client for that).
 		local drop = droppedParts[itemId]

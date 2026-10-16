@@ -1,3 +1,4 @@
+--!strict
 --[[
     WorkbenchCameraController (LocalScript)
     ---------------------------------------
@@ -11,10 +12,8 @@
     - left-drag on empty space rotates the part on the bench (drags that
       start on UI, like the REPAIR button, are ignored)
 
-    Fires the client BindableEvent ReplicatedStorage.WorkbenchViewChanged
-    (true on enter, false on leave), which RepairUI listens to. This script
-    creates it if it doesn't exist, so it no longer has to be set up by hand
-    in the place file.
+    Fires ClientSignals.WorkbenchViewChanged (true on enter, false on
+    leave), which RepairUI listens to.
 
     Workspace setup it expects: Workspace.Workbench with a BasePart "Main"
     (holds the prompt) and optionally a BasePart "PartAnchor" (where the part
@@ -40,46 +39,45 @@ local ROT_SENSITIVITY = 0.5  -- degrees per pixel of drag
 local SWAY_INTENSITY  = 1.2  -- degrees of camera sway at the screen edge
 local CAMERA_LERP     = 0.1
 
--- ── View-changed event (shared with RepairUI) ─────────────────────────────────
-
-local viewChanged = ReplicatedStorage:FindFirstChild("WorkbenchViewChanged")
-if not viewChanged then
-	viewChanged        = Instance.new("BindableEvent")
-	viewChanged.Name   = "WorkbenchViewChanged"
-	viewChanged.Parent = ReplicatedStorage
-end
+local ClientSignals = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ClientSignals"))
+local viewChanged   = ClientSignals.WorkbenchViewChanged -- RepairUI listens
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 
 local active          = false
 local enteredAt       = 0
-local bench           = nil -- Workspace.Workbench
-local benchPrompt     = nil
+local bench: Instance?                = nil -- Workspace.Workbench
+local benchPrompt: ProximityPrompt?   = nil
 local dynamicDistance = 7
 local isDragging      = false
 local partRotation    = CFrame.new()
 local lastMousePos    = Vector2.zero
-local dofEffect       = nil
+local dofEffect: DepthOfFieldEffect?  = nil
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
-local function getAnchor()
-	return bench and (bench:FindFirstChild("PartAnchor") or bench:FindFirstChild("Main"))
+local function getAnchor(): BasePart?
+	local anchor = bench and (bench:FindFirstChild("PartAnchor") or bench:FindFirstChild("Main"))
+	if anchor and anchor:IsA("BasePart") then
+		return anchor
+	end
+	return nil
 end
 
-local function setDepthOfField(enabled)
+local function setDepthOfField(enabled: boolean)
 	if enabled and not dofEffect then
-		dofEffect               = Instance.new("DepthOfFieldEffect")
-		dofEffect.FarIntensity  = 0.8
-		dofEffect.InFocusRadius = 5
-		dofEffect.Parent        = Lighting
+		local dof         = Instance.new("DepthOfFieldEffect")
+		dof.FarIntensity  = 0.8
+		dof.InFocusRadius = 5
+		dof.Parent        = Lighting
+		dofEffect         = dof
 	elseif not enabled and dofEffect then
 		dofEffect:Destroy()
 		dofEffect = nil
 	end
 end
 
-local function setCharacterHidden(hidden)
+local function setCharacterHidden(hidden: boolean)
 	local char = player.Character
 	if not char then return end
 	for _, v in ipairs(char:GetDescendants()) do
@@ -94,11 +92,13 @@ end
 local function cameraUpdate()
 	if not active then return end
 	local anchor = getAnchor()
-	if not anchor then return end
+	local wb     = bench
+	if not anchor or not wb then return end
 	camera.CameraType = Enum.CameraType.Scriptable
 
 	local focusPoint = anchor.Position
-	local part = bench:FindFirstChild("PartOnBench", true)
+	local found = wb:FindFirstChild("PartOnBench", true)
+	local part  = if found and found:IsA("Model") then found else nil
 
 	-- Drag to rotate the part
 	if isDragging and part then
@@ -209,14 +209,18 @@ task.spawn(function()
 		return
 	end
 
-	benchPrompt = main:FindFirstChildWhichIsA("ProximityPrompt")
-	if not benchPrompt then
-		benchPrompt        = Instance.new("ProximityPrompt")
-		benchPrompt.Parent = main
+	local prompt: ProximityPrompt
+	local existing = main:FindFirstChildWhichIsA("ProximityPrompt")
+	if existing and existing:IsA("ProximityPrompt") then
+		prompt = existing
+	else
+		prompt        = Instance.new("ProximityPrompt")
+		prompt.Parent = main
 	end
-	benchPrompt.ActionText          = "Repair"
-	benchPrompt.KeyboardKeyCode     = EXIT_KEY
-	benchPrompt.RequiresLineOfSight = false
-	benchPrompt.HoldDuration        = 0
-	benchPrompt.Triggered:Connect(enterBench)
+	prompt.ActionText          = "Repair"
+	prompt.KeyboardKeyCode     = EXIT_KEY
+	prompt.RequiresLineOfSight = false
+	prompt.HoldDuration        = 0
+	prompt.Triggered:Connect(enterBench)
+	benchPrompt = prompt
 end)

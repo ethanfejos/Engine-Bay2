@@ -1,3 +1,4 @@
+--!strict
 --[[
     RepairService (ModuleScript, started by Main)
     ---------------------------------------------
@@ -26,6 +27,7 @@ local ProfileManager   = require(script.Parent.Parent.Modules.ProfileManager)
 local InventoryService = require(script.Parent.InventoryService)
 local LevelService     = require(script.Parent.LevelService)
 local MoneyService     = require(script.Parent.MoneyService)
+local Types            = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Types"))
 local RepairRules      = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("RepairRules"))
 
 -- ── Config ────────────────────────────────────────────────────────────────────
@@ -35,34 +37,25 @@ local TICK             = 0.1  -- seconds between repair progress updates
 
 -- ── Remotes ───────────────────────────────────────────────────────────────────
 
-local function getOrCreate(parent, className, name)
-	local existing = parent:FindFirstChild(name)
-	if existing then return existing end
-	local inst  = Instance.new(className)
-	inst.Name   = name
-	inst.Parent = parent
-	return inst
-end
-
-local remoteFolder      = getOrCreate(ReplicatedStorage, "Folder", "RemoteEvents")
-local startRepairEvent  = getOrCreate(remoteFolder, "RemoteEvent", "StartRepair")
-local cancelRepairEvent = getOrCreate(remoteFolder, "RemoteEvent", "CancelRepair")
-local replacePartEvent  = getOrCreate(remoteFolder, "RemoteEvent", "ReplacePart")
-local repairProgress    = getOrCreate(remoteFolder, "RemoteEvent", "RepairProgress")
-local repairComplete    = getOrCreate(remoteFolder, "RemoteEvent", "RepairComplete")
-local repairRefused     = getOrCreate(remoteFolder, "RemoteEvent", "RepairRefused")
-local inventoryUpdated  = getOrCreate(remoteFolder, "RemoteEvent", "InventoryUpdated")
+local Remotes = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Remotes"))
+local startRepairEvent  = Remotes.StartRepair
+local cancelRepairEvent = Remotes.CancelRepair
+local replacePartEvent  = Remotes.ReplacePart
+local repairProgress    = Remotes.RepairProgress
+local repairComplete    = Remotes.RepairComplete
+local repairRefused     = Remotes.RepairRefused
+local inventoryUpdated  = Remotes.InventoryUpdated
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 
-local activeRepairs = {} -- [player] = { itemId = string, thread = thread }
+local activeRepairs: { [Player]: { itemId: string, thread: thread } } = {}
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
 -- The bench's "Main" part (or PrimaryPart), looked up once and re-found only
 -- if it's been removed — not scanned every repair tick.
-local benchPart = nil
-local function getBenchPart()
+local benchPart: BasePart? = nil
+local function getBenchPart(): BasePart?
 	if benchPart and benchPart.Parent then return benchPart end
 	benchPart = nil
 	local wb = workspace:FindFirstChild("Workbench")
@@ -76,15 +69,16 @@ local function getBenchPart()
 	return benchPart
 end
 
-local function isNearWorkbench(player)
-	local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+local function isNearWorkbench(player: Player): boolean
+	local char  = player.Character
+	local hrp   = char and char:FindFirstChild("HumanoidRootPart")
 	local bench = getBenchPart()
-	if not hrp or not bench then return false end
+	if not hrp or not hrp:IsA("BasePart") or not bench then return false end
 	return (hrp.Position - bench.Position).Magnitude <= WORKBENCH_RADIUS
 end
 
 -- Tells the client why, in words for the player, and stops any progress bar.
-local function refuse(player, itemId, message, logDetail)
+local function refuse(player: Player, itemId: string?, message: string, logDetail: string?)
 	warn("[RepairService] Refused for", player.Name, "-", logDetail or message)
 	repairRefused:FireClient(player, itemId, message)
 	repairProgress:FireClient(player, itemId, -1)
@@ -92,7 +86,7 @@ end
 
 -- Sets an inventory item to perfect condition and resends the inventory.
 -- Returns false if the item is no longer in the inventory.
-local function setPerfect(player, itemId)
+local function setPerfect(player: Player, itemId: string): boolean
 	local profile = ProfileManager.GetProfile(player)
 	if not profile then return false end
 	for _, invItem in ipairs(profile.Data.inventory) do
@@ -107,7 +101,7 @@ end
 
 -- Common checks for both actions. Returns the inventory item, or nil after
 -- refusing.
-local function checkRequest(player, itemId)
+local function checkRequest(player: Player, itemId: any): Types.InventoryItem?
 	if type(itemId) ~= "string" then
 		return nil
 	end
@@ -123,7 +117,7 @@ local function checkRequest(player, itemId)
 	return item
 end
 
-local function cancelRepair(player)
+local function cancelRepair(player: Player)
 	local repair = activeRepairs[player]
 	if repair then
 		task.cancel(repair.thread)

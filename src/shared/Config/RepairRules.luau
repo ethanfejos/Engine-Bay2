@@ -1,3 +1,4 @@
+--!strict
 --[[
     RepairRules (ModuleScript, shared)
     ----------------------------------
@@ -17,6 +18,13 @@
     MoneyService.TEST_FLAT_COST until real prices are designed.
 ]]
 
+export type Options = {
+	canRepair: boolean,
+	canReplace: boolean,
+	reason: string?,       -- why NOTHING can be done ("ALREADY PERFECT")
+	repairReason: string?, -- why repair specifically isn't allowed ("TOO WORN")
+}
+
 local RepairRules = {}
 
 RepairRules.MIN_REPAIRABLE_WEAR   = 10 -- at or below this, a part can only be replaced
@@ -25,7 +33,7 @@ RepairRules.MIN_REPAIR_TIME       = 1  -- seconds, for a part that's almost perf
 RepairRules.DEFAULT_REPLACE_PRICE = 1  -- testing placeholder (see header)
 
 -- Seconds a repair takes for a part at `wear` (0–100).
-function RepairRules.GetRepairTime(wear)
+function RepairRules.GetRepairTime(wear: number): number
 	local fraction = 1 - (wear / 100)
 	return math.max(RepairRules.MIN_REPAIR_TIME, fraction * RepairRules.MAX_REPAIR_TIME)
 end
@@ -35,7 +43,7 @@ end
 --   canReplace    bool
 --   reason        nil, or why NOTHING can be done ("ALREADY PERFECT")
 --   repairReason  nil, or why repair specifically isn't allowed ("TOO WORN")
-function RepairRules.GetOptions(wear)
+function RepairRules.GetOptions(wear: any): Options
 	if type(wear) ~= "number" then
 		return { canRepair = false, canReplace = false, reason = "UNKNOWN PART" }
 	end
@@ -50,7 +58,7 @@ end
 
 -- Price to replace the part described by `template` (nil = unknown part,
 -- which uses the default).
-function RepairRules.GetReplacePrice(template)
+function RepairRules.GetReplacePrice(template: Instance?): number
 	local price = template and template:GetAttribute("Price")
 	if type(price) == "number" and price >= 0 then
 		return math.floor(price)
@@ -59,9 +67,10 @@ function RepairRules.GetReplacePrice(template)
 end
 
 -- The template for an inventory part, or nil.
-function RepairRules.FindTemplate(engineName, partName)
+function RepairRules.FindTemplate(engineName: string?, partName: string?): Instance?
 	local templates = game:GetService("ReplicatedStorage"):FindFirstChild("EnginePartTemplates")
-	local engineFolder = templates and templates:FindFirstChild(engineName)
+	if not templates or not engineName or not partName then return nil end
+	local engineFolder = templates:FindFirstChild(engineName)
 	return engineFolder and engineFolder:FindFirstChild(partName) or nil
 end
 

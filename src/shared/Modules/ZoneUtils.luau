@@ -1,3 +1,4 @@
+--!strict
 --[[
     ZoneUtils (ModuleScript)
     ------------------------
@@ -17,7 +18,7 @@ local ZoneUtils = {}
 -- ── Position math ─────────────────────────────────────────────────────────────
 
 -- Is a world position inside a zone part's bounds?
-function ZoneUtils.IsPositionInZone(position, zone)
+function ZoneUtils.IsPositionInZone(position: Vector3, zone: BasePart): boolean
 	local localPos = zone.CFrame:PointToObjectSpace(position)
 	local half     = zone.Size / 2
 	return math.abs(localPos.X) <= half.X
@@ -28,7 +29,7 @@ end
 -- ── Zone lookups ──────────────────────────────────────────────────────────────
 
 -- Returns the zone PART containing a world position, or nil.
-function ZoneUtils.GetZonePartForPosition(position)
+function ZoneUtils.GetZonePartForPosition(position: Vector3): BasePart?
 	local zonesFolder = workspace:FindFirstChild("EngineZones")
 	if not zonesFolder then return nil end
 
@@ -41,27 +42,27 @@ function ZoneUtils.GetZonePartForPosition(position)
 end
 
 -- Returns the zone NAME (its identity) containing a position, or nil.
-function ZoneUtils.GetZoneForPosition(position)
+function ZoneUtils.GetZoneForPosition(position: Vector3): string?
 	local zone = ZoneUtils.GetZonePartForPosition(position)
 	return zone and zone.Name or nil
 end
 
 -- Zone part the player's HumanoidRootPart is currently inside, or nil.
-function ZoneUtils.GetZonePartForPlayer(player)
+function ZoneUtils.GetZonePartForPlayer(player: Player): BasePart?
 	local hrp = player.Character
 		and player.Character:FindFirstChild("HumanoidRootPart")
-	if not hrp then return nil end
+	if not hrp or not hrp:IsA("BasePart") then return nil end
 	return ZoneUtils.GetZonePartForPosition(hrp.Position)
 end
 
 -- Zone name the player is currently inside, or nil.
-function ZoneUtils.GetZoneForPlayer(player)
+function ZoneUtils.GetZoneForPlayer(player: Player): string?
 	local zone = ZoneUtils.GetZonePartForPlayer(player)
 	return zone and zone.Name or nil
 end
 
 -- The zone's type ("Mechanic", "Paint", ...) or nil if it has none.
-function ZoneUtils.GetZoneType(zone)
+function ZoneUtils.GetZoneType(zone: Instance?): string?
 	local zoneType = zone and zone:GetAttribute("ZoneType")
 	if type(zoneType) == "string" and zoneType ~= "" then
 		return zoneType
@@ -75,14 +76,14 @@ end
 -- "EngineTrigger" child whose pivot is inside the zone. Works wherever the
 -- engine lives in the workspace (inside a car, a folder, anywhere).
 -- Returns nil if the bay is empty.
-function ZoneUtils.GetEngineInZone(zone)
+function ZoneUtils.GetEngineInZone(zone: BasePart?): Model?
 	if not zone then return nil end
 
 	local parts = workspace:GetPartBoundsInBox(zone.CFrame, zone.Size)
-	local isEngine = {} -- [model] = true/false, so each model is only tested once
+	local isEngine: { [Model]: boolean } = {} -- [model] = true/false, so each model is only tested once
 
 	for _, part in ipairs(parts) do
-		local model = part.Parent
+		local model: Instance? = part.Parent
 		while model and model ~= workspace do
 			if model:IsA("Model") then
 				if isEngine[model] == nil then
@@ -103,7 +104,7 @@ end
 -- Returns engine, zonePart.
 --   not in any zone        -> nil, nil
 --   in a zone, bay empty   -> nil, zonePart
-function ZoneUtils.GetEngineForPlayer(player)
+function ZoneUtils.GetEngineForPlayer(player: Player): (Model?, BasePart?)
 	local zone = ZoneUtils.GetZonePartForPlayer(player)
 	if not zone then return nil, nil end
 	return ZoneUtils.GetEngineInZone(zone), zone
@@ -114,10 +115,12 @@ end
 -- it's standalone. Shared by client (camera fade/collision) and server
 -- (physics stabilization on part removal, pickup-drop placement) so both
 -- agree on what "the car" is.
-function ZoneUtils.GetTopLevelAncestor(instance)
+function ZoneUtils.GetTopLevelAncestor(instance: Instance): Instance
 	local current = instance
-	while current.Parent and current.Parent:IsA("Model") do
-		current = current.Parent
+	local parent = current.Parent
+	while parent and parent:IsA("Model") do
+		current = parent
+		parent = current.Parent
 	end
 	return current
 end

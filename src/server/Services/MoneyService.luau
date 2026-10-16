@@ -1,3 +1,4 @@
+--!strict
 --[[
     MoneyService (ModuleScript, started by Main)
     --------------------------------------------
@@ -32,6 +33,9 @@
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
 
 local ProfileManager = require(script.Parent.Parent.Modules.ProfileManager)
+local Log = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Log"))
+
+local log = Log.new("MoneyService")
 
 -- ── Config ────────────────────────────────────────────────────────────────────
 
@@ -42,18 +46,9 @@ local TEST_FLAT_COST = 1
 
 -- ── Remotes ───────────────────────────────────────────────────────────────────
 
-local function getOrCreate(parent, className, name)
-	local existing = parent:FindFirstChild(name)
-	if existing then return existing end
-	local inst  = Instance.new(className)
-	inst.Name   = name
-	inst.Parent = parent
-	return inst
-end
-
-local remoteFolder   = getOrCreate(ReplicatedStorage, "Folder", "RemoteEvents")
-local moneyUpdated   = getOrCreate(remoteFolder, "RemoteEvent", "MoneyUpdated")
-local requestMoney   = getOrCreate(remoteFolder, "RemoteEvent", "RequestMoney")
+local Remotes = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Remotes"))
+local moneyUpdated   = Remotes.MoneyUpdated
+local requestMoney   = Remotes.RequestMoney
 
 -- ── Public API ────────────────────────────────────────────────────────────────
 
@@ -62,14 +57,14 @@ MoneyService.TEST_FLAT_COST = TEST_FLAT_COST
 
 -- Sends this player's current balance to their client. Safe to call any
 -- time — does nothing if the profile isn't loaded yet.
-local function pushMoneyToClient(player)
+local function pushMoneyToClient(player: Player)
 	local profile = ProfileManager.GetProfile(player)
 	if not profile then return end
 	moneyUpdated:FireClient(player, profile.Data.money)
 end
 
 -- Current balance, or nil if the profile isn't loaded yet.
-function MoneyService.GetMoney(player)
+function MoneyService.GetMoney(player: Player): number?
 	local profile = ProfileManager.GetProfile(player)
 	return profile and profile.Data.money or nil
 end
@@ -78,14 +73,14 @@ end
 -- the client. `reason` is only used for the Output log — purely diagnostic.
 -- Prefer TrySpend over a negative AddMoney call when the money is paying
 -- for something, so the cost can be validated/refused atomically.
-function MoneyService.AddMoney(player, amount, reason)
+function MoneyService.AddMoney(player: Player, amount: number, reason: string?)
 	local profile = ProfileManager.GetProfile(player)
 	if not profile then return end
 	if type(amount) ~= "number" or amount == 0 then return end
 
 	profile.Data.money = profile.Data.money + amount
 
-	print(("[MoneyService] %s %s$%d (%s) — total $%d"):format(
+	log.debug(("%s %s$%d (%s) — total $%d"):format(
 		player.Name, amount >= 0 and "+" or "-", math.abs(amount), reason or "?", profile.Data.money))
 
 	pushMoneyToClient(player)
@@ -95,7 +90,7 @@ end
 -- can afford it; returns false and changes nothing otherwise. Use this
 -- (not AddMoney with a negative number) for anything that's actually
 -- paying for something, so insufficient funds can't go negative.
-function MoneyService.TrySpend(player, amount, reason)
+function MoneyService.TrySpend(player: Player, amount: number, reason: string?): boolean
 	local profile = ProfileManager.GetProfile(player)
 	if not profile then return false end
 	if type(amount) ~= "number" or amount <= 0 then return false end
@@ -106,7 +101,7 @@ function MoneyService.TrySpend(player, amount, reason)
 
 	profile.Data.money = profile.Data.money - amount
 
-	print(("[MoneyService] %s -$%d (%s) — total $%d"):format(
+	log.debug(("%s -$%d (%s) — total $%d"):format(
 		player.Name, amount, reason or "?", profile.Data.money))
 
 	pushMoneyToClient(player)

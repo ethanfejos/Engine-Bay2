@@ -1,6 +1,6 @@
 --[[
-    InventoryService (Script)
-    -------------------------
+    InventoryService (ModuleScript, started by Main)
+    ------------------------------------------------
     Server-side inventory management for engine parts.
     Uses ProfileService for persistent saving.
 
@@ -15,17 +15,16 @@
     - ReinstallPart     (client -> server) player wants to reinstall a part
     - RequestInventory  (client -> server) client requests current inventory on join
 
-    Place in: ServerScriptService/Services
+    Started by Main.server.luau (see there for the order).
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
 
 -- Points at ProfileManager (wraps the real ProfileService library) rather
 -- than the old hand-rolled ProfileService.luau. Kept as the local name
 -- "ProfileService" so every ProfileService.GetProfile(...) call below is
 -- unchanged.
-local ProfileService = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Modules"):WaitForChild("ProfileManager"))
+local ProfileService = require(script.Parent.Parent.Modules.ProfileManager)
 local ZoneUtils      = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 local PartRules      = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("PartRules"))
 

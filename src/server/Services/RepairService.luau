@@ -1,6 +1,6 @@
 --[[
-    RepairService (ModuleScript, run by RepairServiceRunner)
-    --------------------------------------------------------
+    RepairService (ModuleScript, started by Main)
+    ---------------------------------------------
     Server side of the workbench. A part in the player's inventory can be:
     - REPAIRED: free, timed, +XP. The player must stay at the bench.
     - REPLACED: paid through MoneyService, instant, no XP.
@@ -16,19 +16,16 @@
     - RepairRefused  (server -> client) itemId, message — a short, player-
                      facing reason for any refusal (also logged in Output)
 
-    Place in: ServerScriptService/Services
+    Started by Main.server.luau (see there for the order).
 ]]
 
 local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
 
-local Services = ServerScriptService:WaitForChild("Server"):WaitForChild("Services")
-
-local ProfileManager   = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Modules"):WaitForChild("ProfileManager"))
-local InventoryService = require(Services:WaitForChild("InventoryService"))
-local LevelService     = require(Services:WaitForChild("LevelService"))
-local MoneyService     = require(Services:WaitForChild("MoneyService"))
+local ProfileManager   = require(script.Parent.Parent.Modules.ProfileManager)
+local InventoryService = require(script.Parent.InventoryService)
+local LevelService     = require(script.Parent.LevelService)
+local MoneyService     = require(script.Parent.MoneyService)
 local RepairRules      = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("RepairRules"))
 
 -- ── Config ────────────────────────────────────────────────────────────────────

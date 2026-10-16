@@ -1,6 +1,6 @@
 --[[
-    MoneyService (Script)
-    ----------------------
+    MoneyService (ModuleScript, started by Main)
+    --------------------------------------------
     Server-authoritative money balance. Basic on purpose, for the testing
     phase: every profile starts with a flat TEST_STARTING_BALANCE (set on
     ProfileManager's template, not here — see PROFILE_TEMPLATE.money), and
@@ -26,13 +26,12 @@
     remote needed for spending/earning itself, only for syncing the result
     to the client that owns it.
 
-    Place in: ServerScriptService/Services
+    Started by Main.server.luau (see there for the order).
 ]]
 
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
 
-local ProfileManager = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Modules"):WaitForChild("ProfileManager"))
+local ProfileManager = require(script.Parent.Parent.Modules.ProfileManager)
 
 -- ── Config ────────────────────────────────────────────────────────────────────
 

@@ -1,6 +1,6 @@
 --[[
-    LevelService (Script)
-    ----------------------
+    LevelService (ModuleScript, started by Main)
+    --------------------------------------------
     Server-authoritative XP and level tracking. Awards XP for repairing,
     removing, and inspecting parts; saves through ProfileManager the same
     way InventoryService does.
@@ -32,14 +32,13 @@
     rather than going through a remote, since those actions are already
     server-authoritative at the point AddXP is called.
 
-    Place in: ServerScriptService/Services
+    Started by Main.server.luau (see there for the order).
 ]]
 
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
 
-local ProfileManager = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Modules"):WaitForChild("ProfileManager"))
+local ProfileManager = require(script.Parent.Parent.Modules.ProfileManager)
 local LevelCurve      = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("LevelCurve"))
 local ZoneUtils       = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 local PartRules       = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("PartRules"))

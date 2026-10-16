@@ -1,10 +1,11 @@
 --[[
-    ZoneService (Script)
-    --------------------
-    Tracks which zone (repair bay) each player is standing in and fires:
-    - PlayerEnteredZone (player, zoneName, zoneType)
-    - PlayerLeftZone    (player, zoneName, zoneType)
-    as BindableEvents in ServerScriptService.Server.Services.ZoneServiceEvents.
+    ZoneService (ModuleScript, started by Main)
+    -------------------------------------------
+    Tracks which zone (repair bay) each player is standing in and fires two
+    signals other services connect to directly:
+    - ZoneService.PlayerEnteredZone (player, zoneName, zoneType)
+    - ZoneService.PlayerLeftZone    (player, zoneName, zoneType)
+    e.g. ZoneService.PlayerLeftZone:Connect(function(player, zoneName) ... end)
 
     How a player's zone is decided:
     - Polled POLL_RATE times a second from the HumanoidRootPart's position,
@@ -25,34 +26,25 @@
     ZoneUtils finds wins.
 ]]
 
-local Players             = game:GetService("Players")
-local RunService          = game:GetService("RunService")
-local ReplicatedStorage   = game:GetService("ReplicatedStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local ZoneUtils = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
+local Signal    = require(script.Parent.Parent.Modules.Signal)
 
 -- ── Config ────────────────────────────────────────────────────────────────────
 
 local POLL_RATE = 10 -- checks per second; enter/leave lag is at most 1/POLL_RATE s
 
--- ── Events ────────────────────────────────────────────────────────────────────
+-- ── Signals ───────────────────────────────────────────────────────────────────
 
--- Parent events inside Services folder so ToolService / PartPickupService can find them
-local servicesFolder    = ServerScriptService:WaitForChild("Server"):WaitForChild("Services")
-local eventsFolder      = Instance.new("Folder")
-eventsFolder.Name       = "ZoneServiceEvents"
-eventsFolder.Parent     = servicesFolder
+local ZoneService = {}
+ZoneService.PlayerEnteredZone = Signal.new()
+ZoneService.PlayerLeftZone    = Signal.new()
 
-local PlayerEnteredZone      = Instance.new("BindableEvent")
-PlayerEnteredZone.Name       = "PlayerEnteredZone"
-PlayerEnteredZone.Parent     = eventsFolder
-
-local PlayerLeftZone         = Instance.new("BindableEvent")
-PlayerLeftZone.Name          = "PlayerLeftZone"
-PlayerLeftZone.Parent        = eventsFolder
-
-local zonesFolder = workspace:WaitForChild("EngineZones")
+local PlayerEnteredZone = ZoneService.PlayerEnteredZone
+local PlayerLeftZone    = ZoneService.PlayerLeftZone
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 
@@ -175,15 +167,23 @@ local function registerZone(zone)
 	print("[ZoneService] Registered zone:", zone.Name, "type:", tostring(zoneType))
 end
 
-for _, zone in ipairs(zonesFolder:GetChildren()) do
-	registerZone(zone)
-end
+-- Zones are registered in the background so starting this module never
+-- waits on the workspace; players are simply in no zone until it's done.
+task.spawn(function()
+	local zonesFolder = workspace:WaitForChild("EngineZones")
 
-zonesFolder.ChildAdded:Connect(registerZone)
-
--- Players inside a removed zone get their leave on the next poll.
-zonesFolder.ChildRemoved:Connect(function(zone)
-	if zonesByName[zone.Name] == zone then
-		zonesByName[zone.Name] = nil
+	for _, zone in ipairs(zonesFolder:GetChildren()) do
+		registerZone(zone)
 	end
+
+	zonesFolder.ChildAdded:Connect(registerZone)
+
+	-- Players inside a removed zone get their leave on the next poll.
+	zonesFolder.ChildRemoved:Connect(function(zone)
+		if zonesByName[zone.Name] == zone then
+			zonesByName[zone.Name] = nil
+		end
+	end)
 end)
+
+return ZoneService

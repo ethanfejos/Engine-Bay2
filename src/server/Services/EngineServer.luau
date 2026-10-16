@@ -1,6 +1,6 @@
 --[[
-    EngineServer (Script)
-    ---------------------
+    EngineServer (ModuleScript, started by Main)
+    --------------------------------------------
     Server side of removing parts from an engine (the Wrench), plus giving
     every inspectable part a random starting Wear.
 
@@ -23,12 +23,11 @@
 ]]
 
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
 local HttpService         = game:GetService("HttpService")
 
-local LevelService      = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Services"):WaitForChild("LevelService"))
-local PartPickupService = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Services"):WaitForChild("PartPickupService"))
-local ProfileManager    = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Modules"):WaitForChild("ProfileManager"))
+local LevelService      = require(script.Parent.LevelService)
+local PartPickupService = require(script.Parent.PartPickupService)
+local ProfileManager    = require(script.Parent.Parent.Modules.ProfileManager)
 local ZoneUtils         = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 local PartRules         = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("PartRules"))
 
@@ -265,3 +264,5 @@ end)
 -- ── Init ──────────────────────────────────────────────────────────────────────
 
 initAllWear()
+
+return {}

@@ -40,14 +40,12 @@
 local Workspace           = game:GetService("Workspace")
 local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
 
-local InventoryService = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Services"):WaitForChild("InventoryService"))
-local ProfileManager   = require(ServerScriptService:WaitForChild("Server"):WaitForChild("Modules"):WaitForChild("ProfileManager"))
+local InventoryService = require(script.Parent.InventoryService)
+local ProfileManager   = require(script.Parent.Parent.Modules.ProfileManager)
 local ZoneUtils        = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 
-local zoneEventsFolder = ServerScriptService:WaitForChild("Server"):WaitForChild("Services"):WaitForChild("ZoneServiceEvents")
-local PlayerLeftZone   = zoneEventsFolder:WaitForChild("PlayerLeftZone")
+local ZoneService      = require(script.Parent.ZoneService)
 
 local droppedFolder = Workspace:FindFirstChild("DroppedParts")
 if not droppedFolder then
@@ -364,7 +362,7 @@ end
 
 -- Leaving the bay (or dying in it) collects your drops there, so they're
 -- never stranded where you can't easily get back to them.
-PlayerLeftZone.Event:Connect(function(player, zoneName)
+ZoneService.PlayerLeftZone:Connect(function(player, zoneName)
 	for itemId, drop in pairs(droppedParts) do
 		if drop.player == player and drop.zoneName == zoneName then
 			PartPickupService.CollectPart(itemId)

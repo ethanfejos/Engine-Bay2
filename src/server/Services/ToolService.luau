@@ -1,9 +1,8 @@
 --[[
-    ToolService (Script)
-    --------------------
-    Grants/removes tools as players enter/leave zones.
-    - ZoneServiceEvents folder is inside ServerScriptService/Services
-      (created by ZoneService at runtime — ZoneService must run first)
+    ToolService (ModuleScript, started by Main)
+    -------------------------------------------
+    Grants/removes tools as players enter/leave zones, listening to
+    ZoneService.PlayerEnteredZone / PlayerLeftZone directly.
     - Tools come from the zone's TYPE (ToolRegistry.GetToolsForType), so every
       bay of the same type gives the same tools
     - Ownership is tracked per zone NAME, so standing in two overlapping bays
@@ -12,17 +11,13 @@
 
 local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
 
 local ToolRegistry = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config")
 	:WaitForChild("ToolRegistry"))
 
 local toolsFolder = ReplicatedStorage:WaitForChild("Tools")
 
-local eventsFolder      = ServerScriptService:WaitForChild("Server"):WaitForChild("Services")
-	:WaitForChild("ZoneServiceEvents", 10)
-local PlayerEnteredZone = eventsFolder:WaitForChild("PlayerEnteredZone")
-local PlayerLeftZone    = eventsFolder:WaitForChild("PlayerLeftZone")
+local ZoneService = require(script.Parent.ZoneService)
 
 -- Load and validate all tool templates at startup
 local toolTemplates = {}
@@ -135,7 +130,7 @@ local function cleanupPlayer(player)
 	end
 end
 
-PlayerEnteredZone.Event:Connect(function(player, zoneName, zoneType)
+ZoneService.PlayerEnteredZone:Connect(function(player, zoneName, zoneType)
 	for _, toolName in ipairs(ToolRegistry.GetToolsForType(zoneType)) do
 		addReason(player, toolName, zoneName)
 		giveTool(player, toolName)
@@ -144,7 +139,7 @@ end)
 
 -- Leaving doesn't need the zone's type: just drop this zone as a reason for
 -- every tool the player holds, and remove any tool left with no reason.
-PlayerLeftZone.Event:Connect(function(player, zoneName)
+ZoneService.PlayerLeftZone:Connect(function(player, zoneName)
 	local ownership = playerOwnership[player]
 	if not ownership then return end
 	for toolName in pairs(ownership) do
@@ -171,3 +166,5 @@ for _, player in ipairs(Players:GetPlayers()) do
 		setupInventoryWatcher(player)
 	end
 end
+
+return {}

@@ -59,6 +59,8 @@ export type Remotes = {
 	JobUpdated       : RemoteEvent, -- server -> client: the work order (or nil: no job)
 	CancelJob        : RemoteEvent, -- client -> server
 	JobReceipt       : RemoteEvent, -- server -> client: the receipt for a finished job
+	JobQueue         : RemoteEvent, -- server -> client: customers waiting outside (the job board)
+	TakeJob          : RemoteEvent, -- client -> server: jobId — take that customer from the queue
 
 	-- Tony and your bay (TonyService, BayRentalService)
 	TonyStatus       : RemoteEvent, -- server -> client: { debt, mood, rent }
@@ -78,7 +80,7 @@ local NAMES = {
 	"XpUpdated", "LeveledUp", "RequestXp", "InspectStart", "PartInspected", "InspectedSync",
 	"MoneyUpdated", "RequestMoney",
 	"RemovePart", "PartRemoving",
-	"NpcSpeech", "JobUpdated", "CancelJob", "JobReceipt",
+	"NpcSpeech", "JobUpdated", "CancelJob", "JobReceipt", "JobQueue", "TakeJob",
 	"TonyStatus", "ReleaseBay",
 	"StartRepair", "CancelRepair", "ReplacePart", "RepairProgress", "RepairComplete", "RepairRefused",
 }

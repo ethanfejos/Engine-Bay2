@@ -19,7 +19,8 @@
        Roblox's top bar, level with its menu and chat buttons: the bay, the rate,
        the countdown — red ("on tab in 0:09") when you can't cover the next
        minute — and HAND BACK KEYS, which needs a second click within a
-       few seconds (and says so when it would cancel your job).
+       few seconds (and says so when it would cancel your job), and Jobs —
+       how many customers are waiting; opens the job board (JobBoardUI).
 
     Rent numbers come from TonyStatus (TonyService).
 ]]
@@ -34,6 +35,7 @@ local Workspace         = game:GetService("Workspace")
 local Shared    = ReplicatedStorage:WaitForChild("Shared")
 local Remotes   = require(Shared:WaitForChild("Modules"):WaitForChild("Remotes"))
 local ZoneUtils = require(Shared:WaitForChild("Modules"):WaitForChild("ZoneUtils"))
+local ClientSignals = require(Shared:WaitForChild("Modules"):WaitForChild("ClientSignals"))
 local UITheme   = require(Shared:WaitForChild("UI"):WaitForChild("UITheme"))
 local C, FF     = UITheme.Colors, UITheme.Faces
 
@@ -395,11 +397,41 @@ keysBtn.FontFace               = FF.Bold
 keysBtn.TextSize               = 13
 keysBtn.TextColor3             = C.BadText
 keysBtn.Text                   = "Hand back keys"
-keysBtn.LayoutOrder            = 4
+keysBtn.LayoutOrder            = 5
 keysBtn.Parent                 = bar
 UITheme.Corner(keysBtn, UITheme.Radius.Pill)
 UITheme.Stroke(keysBtn, C.Bad, 1, 0.65)
 UITheme.Pad(keysBtn, 0, 14)
+
+-- Jobs: opens the job board (JobBoardUI); shows how many are waiting.
+local jobsBtn                  = Instance.new("TextButton")
+jobsBtn.Size                   = UDim2.new(0, 0, 1, -10)
+jobsBtn.AutomaticSize          = Enum.AutomaticSize.X
+jobsBtn.BackgroundColor3       = C.Amber
+jobsBtn.BackgroundTransparency = 0.86
+jobsBtn.AutoButtonColor        = false
+jobsBtn.FontFace               = FF.Bold
+jobsBtn.TextSize               = 13
+jobsBtn.TextColor3             = C.Amber
+jobsBtn.Text                   = "Jobs [J]"
+jobsBtn.LayoutOrder            = 4
+jobsBtn.Parent                 = bar
+UITheme.Corner(jobsBtn, UITheme.Radius.Pill)
+UITheme.Stroke(jobsBtn, C.Amber, 1, 0.6)
+UITheme.Pad(jobsBtn, 0, 14)
+jobsBtn.MouseButton1Click:Connect(function()
+	ClientSignals.JobBoardToggle:Fire()
+end)
+
+Remotes.JobQueue.OnClientEvent:Connect(function(data: any)
+	if type(data) ~= "table" then return end
+	local waiting = if type(data.jobs) == "table" then #data.jobs else 0
+	local free = data.busy ~= true
+	jobsBtn.Text = if waiting > 0 then ("Jobs · %d  [J]"):format(waiting) else "Jobs [J]"
+	-- Lit up when customers are waiting and you're free to take one.
+	jobsBtn.BackgroundTransparency = if waiting > 0 and free then 0 else 0.86
+	jobsBtn.TextColor3 = if waiting > 0 and free then C.Glass else C.Amber
+end)
 
 type Rent = { bay: string, perMinute: number, nextCharge: number }
 local rent: Rent? = nil

@@ -200,7 +200,11 @@ local function build(data: { [string]: any }): Frame
 	sub.LayoutOrder = nextOrder()
 	rule(paper, nextOrder(), true)
 
-	row(paper, tostring(data.customerName or "?"), tostring(data.car or "?"), nextOrder())
+	local who = tostring(data.customerName or "?")
+	if type(data.customerType) == "string" and data.customerType ~= "REGULAR" then
+		who ..= " (" .. string.lower(data.customerType) .. ")"
+	end
+	row(paper, who, tostring(data.car or "?"), nextOrder())
 	rule(paper, nextOrder())
 
 	-- Work done

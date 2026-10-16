@@ -8,6 +8,9 @@
 
     - WORK ORDER and a stopwatch (red once the job stops counting as quick)
     - the customer's picture, name, car, and the pay in red marker
+    - a stamp of what kind of customer they are (REGULAR, CHEAPSKATE,
+      FUSSY, RUSH JOB, RICH) and their patience: a bar that drains, and the
+      time left — when it runs out they leave
     - what they asked for, typed
     - the checklist: faults get a green marker tick and are crossed out once
       fixed and back in the car; "Put back: ..." while other parts are out
@@ -162,6 +165,57 @@ payLabel.Size = UDim2.new(0, 50, 1, 0)
 payLabel.TextXAlignment = Enum.TextXAlignment.Right
 payLabel.Rotation = -4
 
+-- Customer type stamp + patience bar + time left
+local patienceRow                  = Instance.new("Frame")
+patienceRow.Size                   = UDim2.new(1, 0, 0, 20)
+patienceRow.BackgroundTransparency = 1
+patienceRow.LayoutOrder            = nextOrder()
+patienceRow.Parent                 = sheet
+
+local typeStamp                  = Instance.new("TextLabel")
+typeStamp.AnchorPoint            = Vector2.new(0, 0.5)
+typeStamp.Position               = UDim2.new(0, 2, 0.5, 0)
+typeStamp.Size                   = UDim2.new(0, 0, 0, 16)
+typeStamp.AutomaticSize          = Enum.AutomaticSize.X
+typeStamp.BackgroundTransparency = 1
+typeStamp.FontFace               = FF.Heavy
+typeStamp.TextSize               = 10
+typeStamp.TextColor3             = C.SheetInk
+typeStamp.Rotation               = -3
+typeStamp.Text                   = "REGULAR"
+typeStamp.Parent                 = patienceRow
+UITheme.Pad(typeStamp, 0, 5)
+local typeStroke = UITheme.Stroke(typeStamp, C.SheetInk, 2)
+
+local patienceTrack                  = Instance.new("Frame")
+patienceTrack.AnchorPoint            = Vector2.new(0, 0.5)
+patienceTrack.Position               = UDim2.new(0, 96, 0.5, 0)
+patienceTrack.Size                   = UDim2.new(1, -96 - 46, 0, 10)
+patienceTrack.BackgroundColor3       = Color3.new(1, 1, 1)
+patienceTrack.BorderSizePixel        = 0
+patienceTrack.Parent                 = patienceRow
+UITheme.Stroke(patienceTrack, C.SheetInk, 2)
+local patienceFill            = Instance.new("Frame")
+patienceFill.Size             = UDim2.new(1, 0, 1, 0)
+patienceFill.BackgroundColor3 = C.MarkerGreen
+patienceFill.BorderSizePixel  = 0
+patienceFill.Parent           = patienceTrack
+
+local patienceText = UITheme.Text(patienceRow, "", FF.Type, 12, C.SheetInk)
+patienceText.AnchorPoint = Vector2.new(1, 0)
+patienceText.Position = UDim2.new(1, 0, 0, 0)
+patienceText.Size = UDim2.new(0, 42, 1, 0)
+patienceText.TextXAlignment = Enum.TextXAlignment.Right
+
+-- What the stamp looks like for each kind of customer.
+local TYPE_INK: { [string]: Color3 } = {
+	regular    = C.SheetInk,
+	cheapskate = C.SheetMuted,
+	fussy      = Color3.fromHex("6A4C93"),
+	rush       = C.Marker,
+	rich       = C.MarkerGreen,
+}
+
 -- What they asked for
 local requestLabel = UITheme.Text(sheet, "", FF.Type, 13, Color3.fromHex("3A3832"))
 requestLabel.Size = UDim2.new(1, 0, 0, 0)
@@ -256,6 +310,8 @@ doneScale.Parent = doneStamp
 type Task = { label: string, done: boolean }
 
 local shownUserId: number? = nil
+local deadline: number? = nil
+local patienceTotal = 600
 local hasJob = false
 local atBench = false
 local folded = false
@@ -342,6 +398,7 @@ end
 local function applyFold()
 	foldBtn.Text = if folded then "▼" else "▲"
 	customerRow.Visible  = not folded
+	patienceRow.Visible  = not folded
 	requestLabel.Visible = not folded
 	taskList.Visible     = not folded
 	cancelBtn.Visible    = not folded
@@ -395,6 +452,13 @@ Remotes.JobUpdated.OnClientEvent:Connect(function(job: any)
 	requestLabel.Text = if type(job.request) == "string" then "\u{201C}" .. job.request .. "\u{201D}" else ""
 	setPhoto(if type(job.customerUserId) == "number" then job.customerUserId else nil, customerName)
 	startedAt    = if type(job.startedAt) == "number" then job.startedAt else nil
+	deadline     = if type(job.deadline) == "number" then job.deadline else nil
+	patienceTotal = math.max(1, tonumber(job.patience) or 600)
+	local kind = if type(job.customerKind) == "string" then job.customerKind else "regular"
+	typeStamp.Text = if type(job.customerType) == "string" then job.customerType else "REGULAR"
+	if job.repeatVisit == true then typeStamp.Text ..= " · REPEAT" end
+	typeStamp.TextColor3 = TYPE_INK[kind] or C.SheetInk
+	typeStroke.Color = typeStamp.TextColor3
 	quickSeconds = tonumber(job.quickSeconds) or 300
 	fine         = tonumber(job.cancelFine) or 0
 	stars        = tonumber(job.cancelStars) or 0
@@ -424,9 +488,21 @@ RunService.RenderStepped:Connect(function()
 		timer.Text = ""
 		return
 	end
-	local elapsed = math.max(0, math.floor(Workspace:GetServerTimeNow() - started))
+	local now = Workspace:GetServerTimeNow()
+	local elapsed = math.max(0, math.floor(now - started))
 	timer.Text = ("⏱ %d:%02d"):format(elapsed // 60, elapsed % 60)
 	timer.TextColor3 = if elapsed > quickSeconds then C.Marker else C.SheetInk
+
+	-- Patience drains towards the customer walking out.
+	local due = deadline
+	if due then
+		local secondsLeft = math.max(0, math.ceil(due - now))
+		local share = math.clamp((due - now) / patienceTotal, 0, 1)
+		patienceFill.Size = UDim2.new(share, 0, 1, 0)
+		patienceFill.BackgroundColor3 = if share > 0.5 then C.MarkerGreen elseif share > 0.25 then C.TonyTab else C.Marker
+		patienceText.Text = ("%d:%02d"):format(secondsLeft // 60, secondsLeft % 60)
+		patienceText.TextColor3 = if share > 0.25 then C.SheetInk else C.Marker
+	end
 end)
 
 -- Cancel: the first click shows the cost, a second within CONFIRM_TIME confirms.

@@ -31,12 +31,16 @@ export type ClientSignals = {
 
 	-- WorkbenchCameraController -> RepairUI: entered (true) / left (false) bench view
 	WorkbenchViewChanged : Signal.Signal,
+
+	-- BayRentalUI's Jobs button -> JobBoardUI: open/close the job board
+	JobBoardToggle : Signal.Signal,
 }
 
 local ClientSignals: ClientSignals = {
 	PartSelected         = Signal.new(),
 	ReinstallRequested   = Signal.new(),
 	WorkbenchViewChanged = Signal.new(),
+	JobBoardToggle       = Signal.new(),
 }
 
 return ClientSignals

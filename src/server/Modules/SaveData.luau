@@ -51,6 +51,20 @@ export type JobRecord = {
 	faults: { string },           -- part paths the customer asked to have fixed
 	pay: number,
 	request: string,              -- what the customer said
+	kind: string?,                -- customer type (CustomerTypes); nil = regular
+	patience: number?,            -- seconds they'll wait in total
+	waited: number?,              -- seconds already waited in earlier sessions (patience pauses while you're offline)
+	repeatVisit: boolean?,        -- a regular coming back (tips more)
+}
+
+-- A customer who'll come back (JobService, from 3 stars): who they are,
+-- what kind of customer, and their car as you handed it back.
+export type RegularRecord = {
+	name: string,
+	userId: number?,
+	kind: string,
+	car: CarRecord,
+	visits: number,
 }
 
 -- A player's save, as every service sees it after loading.
@@ -63,6 +77,7 @@ export type Data = {
 	cars: { [string]: CarRecord },  -- [carId]
 	activeCarId: string?,           -- the car that spawns when they join
 	activeJob: JobRecord?,          -- the customer job in progress, if any
+	regulars: { [string]: RegularRecord }, -- customers who'll come back, [key] (JobService)
 	reputation: number,             -- stars, 0–5 in small steps (ReputationService)
 	tonyDebt: number,               -- what the player owes Tony, whole dollars (TonyService)
 }
@@ -72,6 +87,9 @@ local SaveData = {}
 -- What every player starts with (and what step 3 set existing saves to).
 local STARTING_MONEY = 500
 SaveData.STARTING_MONEY = STARTING_MONEY
+
+-- The most regular customers a save remembers.
+SaveData.MAX_REGULARS = 10
 
 -- Bump this together with adding a MIGRATIONS step.
 SaveData.CURRENT_VERSION = 4
@@ -101,6 +119,9 @@ local TEMPLATE: Data = {
 	-- these from Reconcile, so no migration step is needed.)
 	reputation = 0,
 	tonyDebt = 0,
+
+	-- Customers who'll come back (none yet).
+	regulars = {},
 }
 SaveData.TEMPLATE = TEMPLATE
 
@@ -249,6 +270,10 @@ local function cleanJob(job: any): JobRecord?
 		faults         = faults,
 		pay            = math.max(0, math.floor(tonumber(job.pay) or 0)),
 		request        = if type(job.request) == "string" then job.request else "",
+		kind           = if type(job.kind) == "string" then job.kind else nil,
+		patience       = if type(job.patience) == "number" and job.patience > 0 then job.patience else nil,
+		waited         = if type(job.waited) == "number" and job.waited >= 0 then job.waited else nil,
+		repeatVisit    = if job.repeatVisit == true then true else nil,
 	}
 end
 
@@ -344,6 +369,30 @@ function SaveData.Sanitize(data: any): { string }
 		if not job then table.insert(notes, "activeJob dropped (malformed)") end
 		data.activeJob = job
 	end
+
+	-- Regulars: keep well-formed ones, at most MAX_REGULARS.
+	local regulars: { [string]: RegularRecord } = {}
+	local kept = 0
+	if type(data.regulars) == "table" then
+		for key, r in pairs(data.regulars) do
+			if kept >= SaveData.MAX_REGULARS then break end
+			if type(key) == "string" and type(r) == "table" and type(r.name) == "string"
+				and type(r.car) == "table" then
+				local car = cleanCar(r.car.id, r.car)
+				if car then
+					regulars[key] = {
+						name   = r.name,
+						userId = if type(r.userId) == "number" then r.userId else nil,
+						kind   = if type(r.kind) == "string" then r.kind else "regular",
+						car    = car,
+						visits = math.max(1, math.floor(tonumber(r.visits) or 1)),
+					}
+					kept += 1
+				end
+			end
+		end
+	end
+	data.regulars = regulars
 
 	if type(data.activeCarId) ~= "string" or cars[data.activeCarId] == nil then
 		if data.activeCarId ~= nil then

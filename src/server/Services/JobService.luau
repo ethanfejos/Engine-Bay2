@@ -41,8 +41,9 @@
     THE CAR PARK: while they queue, each customer waits outside with their
     car in a parking space (a look-alike, CarService.SpawnParked). You can
     walk up and take the job there too ("Take job" prompt, only you see it).
-    Spaces: parts in Workspace.ParkingSpots with a "Bay" attribute naming
-    the bay they belong to (the bay part's name, e.g. "Mechanic_1"); the
+    Spaces: parts in a Folder (or Model) called ParkingSpots anywhere in the
+    Workspace, each with a "Bay" attribute naming the bay it belongs to (the
+    bay part's name "Mechanic_1", its DisplayName, or just "1"); the
     lowest "Order" attribute (then name) fills first. A "CustomerSpot" part
     inside a space is where the customer stands; otherwise beside the car.
     No free space for your bay: they still queue, just on the board only.
@@ -784,14 +785,49 @@ end
 
 local takeJob: (Player, string) -> () -- defined below
 
--- The parking spaces that belong to `bay`, in the order they fill.
+-- Does a parking space's "Bay" attribute name this bay? Lenient: the bay
+-- part's name ("Mechanic_1"), its DisplayName, or just its number ("1",
+-- "Bay 1"), any case.
+local function spotIsFor(value: any, bay: BasePart): boolean
+	if type(value) == "number" then value = tostring(value) end
+	if type(value) ~= "string" or value == "" then return false end
+	local want = string.lower((value:gsub("^%s+", ""):gsub("%s+$", "")))
+	if want == string.lower(bay.Name) then return true end
+	local display = bay:GetAttribute("DisplayName")
+	if type(display) == "string" and want == string.lower(display) then return true end
+	local bayNumber = string.match(bay.Name, "(%d+)$")
+	local wantNumber = string.match(want, "^bay%s*(%d+)$") or string.match(want, "^(%d+)$")
+	return bayNumber ~= nil and wantNumber ~= nil and tonumber(bayNumber) == tonumber(wantNumber)
+end
+
+-- The parking spaces that belong to `bay`, in the order they fill. They're
+-- parts with a "Bay" attribute inside a Folder or Model called
+-- "ParkingSpots" anywhere in the Workspace.
+local warnedNoSpots: { [string]: boolean } = {}
 local function spotsFor(bay: BasePart): { BasePart }
-	local folder = Workspace:FindFirstChild("ParkingSpots")
 	local list: { BasePart } = {}
-	if not folder then return list end
-	for _, d in ipairs(folder:GetDescendants()) do
-		if d:IsA("BasePart") and d:GetAttribute("Bay") == bay.Name then
-			table.insert(list, d)
+	local seenBays: { string } = {}
+	local folders = 0
+	for _, folder in ipairs(Workspace:GetDescendants()) do
+		if folder.Name ~= "ParkingSpots" or folder:IsA("BasePart") then continue end
+		folders += 1
+		for _, d in ipairs(folder:GetDescendants()) do
+			if d:IsA("BasePart") and d:GetAttribute("Bay") ~= nil then
+				if spotIsFor(d:GetAttribute("Bay"), bay) then
+					table.insert(list, d)
+				else
+					table.insert(seenBays, tostring(d:GetAttribute("Bay")))
+				end
+			end
+		end
+	end
+	if #list == 0 and not warnedNoSpots[bay.Name] then
+		warnedNoSpots[bay.Name] = true
+		if folders == 0 then
+			log.warn("No parking spaces: add a Folder called ParkingSpots to the Workspace (customers will only be on the job board)")
+		else
+			log.warn(("No parking space for bay %s: set a space's Bay attribute to %q. Bay attributes found: %s"):format(
+				bay.Name, bay.Name, if #seenBays > 0 then table.concat(seenBays, ", ") else "none"))
 		end
 	end
 	table.sort(list, function(a, b)
@@ -862,6 +898,7 @@ local function park(player: Player, bay: BasePart, q: Queued)
 	if not spot then return end
 	q.spot = spot
 	q.parked = CarService.SpawnParked(q.job.car, spot)
+	log.debug("Parked", q.job.customerName, "in", spot:GetFullName(), if q.parked then "" else "(car failed)")
 	task.spawn(function()
 		local npc = Npc.Spawn(q.job.customerName, parkedCustomerSpot(spot, bay), q.job.customerUserId)
 		if not npc then return end

@@ -8,10 +8,14 @@
       bay of the same type gives the same tools
     - Ownership is tracked per zone NAME, so standing in two overlapping bays
       only removes a tool once the player has left both
+    - Rented zone types (ToolRegistry.NeedsRent — Mechanic bays): only the
+      player renting the bay gets the tools. Rent it while standing in it and
+      they appear; hand back the keys (or get evicted) and they go.
 ]]
 
 local Players             = game:GetService("Players")
 local ReplicatedStorage   = game:GetService("ReplicatedStorage")
+local Workspace           = game:GetService("Workspace")
 
 local ToolRegistry = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config")
 	:WaitForChild("ToolRegistry"))
@@ -19,9 +23,10 @@ local ToolRegistry = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChi
 local toolsFolder = ReplicatedStorage:WaitForChild("Tools")
 
 local ZoneService = require(script.Parent.ZoneService)
+local ZoneUtils   = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 
 -- Load and validate all tool templates at startup
-local toolTemplates = {}
+local toolTemplates: { [string]: Instance } = {}
 for _, zoneType in ipairs(ToolRegistry.GetAllZoneTypes()) do
 	for _, toolName in ipairs(ToolRegistry.GetToolsForType(zoneType)) do
 		if not toolTemplates[toolName] then
@@ -33,33 +38,33 @@ for _, zoneType in ipairs(ToolRegistry.GetAllZoneTypes()) do
 end
 
 -- Ownership tracking: player -> toolName -> { zoneName -> true }
-local playerOwnership   = {}
-local inventoryWatchers = {}
+local playerOwnership: { [Player]: { [string]: { [string]: boolean } } } = {}
+local inventoryWatchers: { [Player]: RBXScriptConnection } = {}
 
-local function getOrCreateOwnership(player)
+local function getOrCreateOwnership(player: Player)
 	playerOwnership[player] = playerOwnership[player] or {}
 	return playerOwnership[player]
 end
 
-local function hasReason(player, toolName)
+local function hasReason(player: Player, toolName: string)
 	local ownership = playerOwnership[player]
 	if not ownership or not ownership[toolName] then return false end
 	return next(ownership[toolName]) ~= nil
 end
 
-local function addReason(player, toolName, zoneName)
+local function addReason(player: Player, toolName: string, zoneName: string)
 	local ownership = getOrCreateOwnership(player)
 	ownership[toolName] = ownership[toolName] or {}
 	ownership[toolName][zoneName] = true
 end
 
-local function removeReason(player, toolName, zoneName)
+local function removeReason(player: Player, toolName: string, zoneName: string)
 	local ownership = playerOwnership[player]
 	if not ownership or not ownership[toolName] then return end
 	ownership[toolName][zoneName] = nil
 end
 
-local function playerHasTool(player, toolName)
+local function playerHasTool(player: Player, toolName: string)
 	for _, container in ipairs({
 		player:FindFirstChild("Backpack"),
 		player.Character,
@@ -71,7 +76,7 @@ local function playerHasTool(player, toolName)
 	return false
 end
 
-local function giveTool(player, toolName)
+local function giveTool(player: Player, toolName: string)
 	if not player or not player.Parent then
 		warn("[ToolService] giveTool aborted — player invalid")
 		return
@@ -94,7 +99,7 @@ local function giveTool(player, toolName)
 	end
 end
 
-local function removeTool(player, toolName)
+local function removeTool(player: Player, toolName: string)
 	for _, container in ipairs({
 		player:FindFirstChild("Backpack"),
 		player.Character,
@@ -106,7 +111,7 @@ local function removeTool(player, toolName)
 	end
 end
 
-local function setupInventoryWatcher(player)
+local function setupInventoryWatcher(player: Player)
 	if inventoryWatchers[player] then
 		inventoryWatchers[player]:Disconnect()
 		inventoryWatchers[player] = nil
@@ -123,24 +128,27 @@ local function setupInventoryWatcher(player)
 	end)
 end
 
-local function cleanupPlayer(player)
-	playerOwnership[player] = nil
-	if inventoryWatchers[player] then
-		inventoryWatchers[player]:Disconnect()
-		inventoryWatchers[player] = nil
-	end
+-- [player] = the zone they're standing in (from ZoneService's signals)
+local currentZone: { [Player]: { name: string, zoneType: string? } } = {}
+
+-- May this player have this zone's tools? Rented zone types: only its renter.
+local function allowed(player: Player, zoneName: string, zoneType: string?): boolean
+	if not ToolRegistry.NeedsRent(zoneType) then return true end
+	local zones = Workspace:FindFirstChild("EngineZones")
+	local zone = zones and zones:FindFirstChild(zoneName)
+	return zone ~= nil and ZoneUtils.GetRenter(zone) == player.UserId
 end
 
-ZoneService.PlayerEnteredZone:Connect(function(player, zoneName, zoneType)
+local function grant(player: Player, zoneName: string, zoneType: string?)
 	for _, toolName in ipairs(ToolRegistry.GetToolsForType(zoneType)) do
 		addReason(player, toolName, zoneName)
 		giveTool(player, toolName)
 	end
-end)
+end
 
--- Leaving doesn't need the zone's type: just drop this zone as a reason for
--- every tool the player holds, and remove any tool left with no reason.
-ZoneService.PlayerLeftZone:Connect(function(player, zoneName)
+-- Drops this zone as a reason for every tool the player holds, and removes
+-- any tool left with no reason.
+local function revoke(player: Player, zoneName: string)
 	local ownership = playerOwnership[player]
 	if not ownership then return end
 	for toolName in pairs(ownership) do
@@ -149,11 +157,54 @@ ZoneService.PlayerLeftZone:Connect(function(player, zoneName)
 			removeTool(player, toolName)
 		end
 	end
+end
+
+local function cleanupPlayer(player: Player)
+	currentZone[player] = nil
+	playerOwnership[player] = nil
+	if inventoryWatchers[player] then
+		inventoryWatchers[player]:Disconnect()
+		inventoryWatchers[player] = nil
+	end
+end
+
+ZoneService.PlayerEnteredZone:Connect(function(player, zoneName, zoneType)
+	currentZone[player] = { name = zoneName, zoneType = zoneType }
+	if allowed(player, zoneName, zoneType) then
+		grant(player, zoneName, zoneType)
+	end
 end)
 
-Players.PlayerAdded:Connect(function(player)
-	player.CharacterAdded:Connect(function()
-		player.Character:WaitForChild("HumanoidRootPart")
+ZoneService.PlayerLeftZone:Connect(function(player, zoneName)
+	local cz = currentZone[player]
+	if cz and cz.name == zoneName then currentZone[player] = nil end
+	revoke(player, zoneName)
+end)
+
+-- A bay rented or given back while someone's standing in it.
+local function watchZone(zone: Instance)
+	if not zone:IsA("BasePart") then return end
+	zone:GetAttributeChangedSignal(ZoneUtils.RENTED_BY_ATTRIBUTE):Connect(function()
+		for player, cz in pairs(currentZone) do
+			if cz.name ~= zone.Name then continue end
+			if allowed(player, cz.name, cz.zoneType) then
+				grant(player, cz.name, cz.zoneType)
+			else
+				revoke(player, cz.name)
+			end
+		end
+	end)
+end
+task.spawn(function()
+	local zones = Workspace:WaitForChild("EngineZones", 30)
+	if not zones then return end
+	for _, zone in ipairs(zones:GetChildren()) do watchZone(zone) end
+	zones.ChildAdded:Connect(watchZone)
+end)
+
+Players.PlayerAdded:Connect(function(player: Player)
+	player.CharacterAdded:Connect(function(character: Model)
+		character:WaitForChild("HumanoidRootPart")
 		setupInventoryWatcher(player)
 	end)
 end)

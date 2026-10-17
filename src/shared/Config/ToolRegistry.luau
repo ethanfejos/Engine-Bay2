@@ -14,10 +14,12 @@
     ZoneUtils.GetEngineInZone).
 ]]
 
-type ZoneTypeEntry = { tools: { string } }
+-- rented = true: you only get the tools in a bay of this type that you rent
+-- from Tony (the bay's "RentedBy" attribute is your UserId).
+type ZoneTypeEntry = { tools: { string }, rented: boolean? }
 
 local zoneTypes: { [string]: ZoneTypeEntry } = {
-	Mechanic = { tools = { "InspectionTool", "Wrench" } },
+	Mechanic = { tools = { "InspectionTool", "Wrench" }, rented = true },
 	Paint    = { tools = {} }, -- add paint tools here once they exist
 }
 
@@ -39,6 +41,12 @@ function registry.GetToolsForType(zoneType: string?): { string }
 		return entry.tools
 	end
 	return {}
+end
+
+-- Does a zone of this type only give tools to the player renting it?
+function registry.NeedsRent(zoneType: string?): boolean
+	local entry = zoneType and zoneTypes[zoneType]
+	return entry ~= nil and entry.rented == true
 end
 
 return registry

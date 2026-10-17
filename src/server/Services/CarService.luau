@@ -262,10 +262,12 @@ end
 -- floor. The car keeps the rotation it has in ServerStorage.Cars — so it's
 -- upright however its pivot is set up — turned by the bay part's own turn
 -- (yaw). To change which way cars face in a bay, rotate the bay part.
-local function placeInZone(car: Model, zone: BasePart)
+-- `extraYaw` (radians) turns it a bit more (parking spaces line cars up
+-- with their long side).
+local function placeInZone(car: Model, zone: BasePart, extraYaw: number?)
 	local authored = car:GetPivot().Rotation
 	local _, bayYaw, _ = zone.CFrame:ToEulerAnglesYXZ()
-	car:PivotTo(CFrame.new(zone.Position) * CFrame.Angles(0, bayYaw, 0) * authored)
+	car:PivotTo(CFrame.new(zone.Position) * CFrame.Angles(0, bayYaw + (extraYaw or 0), 0) * authored)
 
 	local boxCFrame, boxSize = car:GetBoundingBox()
 	local bottomY = boxCFrame.Position.Y - worldHalfHeight(boxCFrame, boxSize)
@@ -433,7 +435,16 @@ function CarService.SpawnParked(record: CarRecord, spot: BasePart): Model?
 			end
 		end
 		holdStill(car)
-		placeInZone(car, spot)
+		-- Line the car's length up with the space's long side.
+		local boxCFrame, boxSize = car:GetBoundingBox()
+		local function along(axis: Vector3): number
+			return math.abs(boxCFrame.RightVector:Dot(axis)) * boxSize.X
+				+ math.abs(boxCFrame.UpVector:Dot(axis)) * boxSize.Y
+				+ math.abs(boxCFrame.LookVector:Dot(axis)) * boxSize.Z
+		end
+		local carLongX = along(Vector3.xAxis) > along(Vector3.zAxis)
+		local spotLongX = spot.Size.X > spot.Size.Z
+		placeInZone(car, spot, if carLongX ~= spotLongX then math.pi / 2 else 0)
 		car.Name = record.model .. " (waiting)"
 		car.Parent = parkedFolder
 		return car

@@ -15,7 +15,8 @@
     - the checklist: faults get a green marker tick and are crossed out once
       fixed and back in the car; "Put back: ..." while other parts are out
     - when everything's done: a green DONE stamp and "E  Hand the car back
-      to <name>"
+      to <name>", and EXTRAS — optional add-ons to tick before handing back
+      (Upsell on the server: most customers refuse them; some don't)
     - CANCEL JOB: the first click shows what it costs (Tony's fine and the
       stars you'd lose); a second click within a few seconds confirms
     - hidden while you're at the workbench (its panels use that side)
@@ -252,6 +253,19 @@ handBackLabel.Position = UDim2.new(0, 40, 0, 0)
 handBackLabel.Size = UDim2.new(1, -46, 1, 0)
 handBackLabel.TextTruncate = Enum.TextTruncate.AtEnd
 
+-- Extras (optional upsells), shown once the work is done
+local extrasBox                  = Instance.new("Frame")
+extrasBox.Size                   = UDim2.new(1, 0, 0, 0)
+extrasBox.AutomaticSize          = Enum.AutomaticSize.Y
+extrasBox.BackgroundTransparency = 1
+extrasBox.LayoutOrder            = nextOrder()
+extrasBox.Visible                = false
+extrasBox.Parent                 = sheet
+UITheme.List(extrasBox, 3)
+local extrasTitle = UITheme.Text(extrasBox, "EXTRAS (OPTIONAL)", FF.Heavy, 10, C.SheetMuted)
+extrasTitle.Size = UDim2.new(1, 0, 0, 14)
+extrasTitle.LayoutOrder = 0
+
 -- Cancel: the button, and the warning shown on the first click
 local warning                  = Instance.new("Frame")
 warning.Size                   = UDim2.new(1, 0, 0, 0)
@@ -395,6 +409,58 @@ local function resetCancel()
 end
 
 -- Folded: just the header. Open: everything for the current state.
+type ExtraRow = { id: string, label: string, price: number, selected: boolean }
+local extrasShown: { ExtraRow } = {}
+local extrasKey = "" -- what's drawn, so ticking doesn't rebuild needlessly
+
+-- Draws the extras list: a tick box, the extra and its price per row.
+local function drawExtras(list: { ExtraRow })
+	local key = ""
+	for _, e in ipairs(list) do key ..= e.id .. (if e.selected then "1" else "0") end
+	if key == extrasKey then return end
+	extrasKey = key
+	extrasShown = list
+	for _, child in ipairs(extrasBox:GetChildren()) do
+		if child:IsA("TextButton") then child:Destroy() end
+	end
+	for i, e in ipairs(list) do
+		local row                  = Instance.new("TextButton")
+		row.Size                   = UDim2.new(1, 0, 0, 18)
+		row.BackgroundTransparency = 1
+		row.Text                   = ""
+		row.LayoutOrder            = i
+		row.Parent                 = extrasBox
+		local box                  = Instance.new("Frame")
+		box.Position               = UDim2.new(0, 1, 0.5, -6)
+		box.Size                   = UDim2.new(0, 12, 0, 12)
+		box.BackgroundTransparency = 1
+		box.Parent                 = row
+		UITheme.Stroke(box, C.SheetInk, 2)
+		if e.selected then
+			local tick = UITheme.Text(box, "✓", FF.Marker, 18, C.Marker)
+			tick.Position = UDim2.new(0, -2, 0, -10)
+			tick.Size = UDim2.new(0, 20, 0, 24)
+		end
+		local label = UITheme.Text(row, e.label, FF.Type, 13, C.SheetInk)
+		label.Position = UDim2.new(0, 22, 0, 0)
+		label.Size = UDim2.new(1, -70, 1, 0)
+		local price = UITheme.Text(row, "+" .. UITheme.Money(e.price), FF.Marker, 15, C.Marker)
+		price.AnchorPoint = Vector2.new(1, 0)
+		price.Position = UDim2.new(1, 0, 0, 0)
+		price.Size = UDim2.new(0, 60, 1, 0)
+		price.TextXAlignment = Enum.TextXAlignment.Right
+		row.MouseButton1Click:Connect(function()
+			-- Flip this one and tell the server what's ticked now.
+			local ids = {}
+			for _, other in ipairs(extrasShown) do
+				local on = if other.id == e.id then not other.selected else other.selected
+				if on then table.insert(ids, other.id) end
+			end
+			Remotes.SetExtras:FireServer(ids)
+		end)
+	end
+end
+
 local function applyFold()
 	foldBtn.Text = if folded then "▼" else "▲"
 	customerRow.Visible  = not folded
@@ -403,6 +469,7 @@ local function applyFold()
 	taskList.Visible     = not folded
 	cancelBtn.Visible    = not folded
 	handBack.Visible     = not folded and isComplete
+	extrasBox.Visible    = not folded and isComplete and #extrasShown > 0
 	doneStamp.Visible    = not folded and isComplete
 	warning.Visible      = not folded and armedAt ~= nil
 	if folded then
@@ -428,6 +495,7 @@ end)
 local function setComplete(complete: boolean)
 	isComplete = complete
 	handBack.Visible = complete and not folded
+	extrasBox.Visible = complete and not folded and #extrasShown > 0
 	doneStamp.Visible = complete and not folded
 	if complete and not wasComplete then
 		doneScale.Scale = 1.8
@@ -473,6 +541,18 @@ Remotes.JobUpdated.OnClientEvent:Connect(function(job: any)
 	end
 	setTasks(tasks)
 	lastTasks = tasks
+	local extras: { ExtraRow } = {}
+	if type(job.extras) == "table" then
+		for _, e in ipairs(job.extras) do
+			if type(e) == "table" and type(e.id) == "string" then
+				table.insert(extras, {
+					id = e.id, label = tostring(e.label or e.id),
+					price = tonumber(e.price) or 0, selected = e.selected == true,
+				})
+			end
+		end
+	end
+	drawExtras(extras)
 	lastPay = tonumber(job.pay) or 0
 	handBackLabel.Text = "Hand the car back to " .. customerName
 	setComplete(job.complete == true)

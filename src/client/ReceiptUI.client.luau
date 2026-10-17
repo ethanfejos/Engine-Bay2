@@ -234,6 +234,10 @@ local function build(data: { [string]: any }): Frame
 		end
 		row(paper, label, money(-tonyCut), nextOrder())
 	end
+	local extrasCut = tonumber(data.extrasCut) or 0
+	if extrasCut ~= 0 then
+		row(paper, "Tony's half of the extras", money(-extrasCut), nextOrder())
+	end
 	if tip ~= 0 then
 		if data.tipStolen == true then
 			local r = row(paper, "Tip", "<s>" .. money(tip) .. "</s>", nextOrder())

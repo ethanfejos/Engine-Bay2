@@ -41,9 +41,16 @@ local TWEEN_FILL_OUT = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDire
 
 -- ── Every prompt in one style ─────────────────────────────────────────────────
 
+-- A prompt with an "OnlyUserId" attribute is only for that player (e.g. a
+-- customer waiting for you in the car park): everyone else's copy is off.
+local myUserId = Players.LocalPlayer.UserId
 local function makeCustom(inst: Instance)
 	if inst:IsA("ProximityPrompt") then
 		inst.Style = Enum.ProximityPromptStyle.Custom
+		local only = inst:GetAttribute("OnlyUserId")
+		if type(only) == "number" and only ~= myUserId then
+			inst.Enabled = false
+		end
 	end
 end
 for _, inst in ipairs(Workspace:GetDescendants()) do makeCustom(inst) end

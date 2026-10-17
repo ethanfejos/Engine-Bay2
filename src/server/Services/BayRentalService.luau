@@ -26,6 +26,20 @@
       its car are saved for next time, by JobService and CarService), and
       nothing is charged while you're away.
 
+    Tony being nasty:
+    - Late rent: every minute that goes on the tab is a strike (shown on the
+      rent bar); every minute paid in full takes one away. At WARN_STRIKES
+      he warns you; at EVICT_STRIKES he throws you out — the bay goes, a job
+      in progress is cancelled (fine and stars, as usual), and he won't rent
+      to you for BAN_SECONDS.
+    - Surprise inspections: every INSPECT_MIN–INSPECT_MAX seconds, with
+      INSPECT_WARNING seconds' notice. Each problem is a fine of FINE_MIN–
+      FINE_MAX: parts on the floor, more than PARTS_OUT_LIMIT parts out of the
+      car, a customer kept waiting past half their patience. A clean bay
+      knocks CLEAN_DEBT off what you owe (or, owing nothing, +CLEAN_STARS).
+    - Loans, only while he's Desperate: a second prompt on Tony ("Borrow
+      money", F). LoanUI picks the amount (TonyService.TakeLoan).
+
     Tony's lines reach the player through NpcSpeech (server -> client),
     shown by BayRentalUI.
 
@@ -47,6 +61,8 @@ local Log            = require(Modules:WaitForChild("Log"))
 local ProfileManager = require(script.Parent.Parent.Modules.ProfileManager)
 local Npc            = require(script.Parent.Parent.Modules.Npc)
 local CarService     = require(script.Parent.CarService)
+local PartPickupService = require(script.Parent.PartPickupService)
+local ReputationService = require(script.Parent.ReputationService)
 local TonyService    = require(script.Parent.TonyService)
 local JobService     = require(script.Parent.JobService)
 
@@ -61,6 +77,19 @@ local BAY_ZONE_TYPE  = "Mechanic"
 local PROMPT_REACH   = 10
 local SPAWN_OWN_CAR  = false -- spawn the player's own (starter) car on renting; back on with the junkyard
 
+local WARN_STRIKES    = 3       -- late payments before Tony warns you
+local EVICT_STRIKES   = 5       -- late payments before he throws you out
+local BAN_SECONDS     = 5 * 60  -- how long after an eviction he won't rent to you
+local INSPECT_MIN     = 15 * 60 -- seconds between inspections, at least
+local INSPECT_MAX     = 25 * 60 -- and at most
+local INSPECT_WARNING = 60      -- notice before he inspects
+local FINE_MIN        = 10      -- each problem he finds costs this much…
+local FINE_MAX        = 30      -- …to this much
+local PARTS_OUT_LIMIT = 3       -- more parts than this out of the car is a mess
+local CLEAN_DEBT      = 5       -- a clean inspection knocks this off your debt
+local CLEAN_STARS     = 0.05    -- or, owing nothing, gives you this much reputation
+local LOAN_KEY        = Enum.KeyCode.F
+
 -- Tony's lines that don't change with his mood (the rest are in TonyService).
 local LINES = {
 	alreadyHave  = "You've already got a bay, kid. One's plenty.",
@@ -69,6 +98,16 @@ local LINES = {
 	noCar        = "Bay's yours, but your car's not turned up. Talk to me again later.",
 	keysBack     = "Keys back. Pleasure doing business.",
 	kickedOut    = "You're not working, you're loitering. Out.",
+	strikesWarn  = "That's %d late payments. Two more and you're out.",
+	lastStrike   = "One more late payment and you're out. I mean it.",
+	evicted      = "That's it. Five late payments. Keys. Now. Cool off, kid.",
+	banned       = "Cool off, kid. Come back in %s.",
+	inspectSoon  = "Inspection in a minute. Tidy up.",
+	inspectPass  = "Hmph. Fine.",
+	inspectFail  = "Look at this place. %s. That's $%d.",
+	loanNo       = "I'm desperate, kid, not stupid. Pay off what you owe first.",
+	loanNotNow   = "Loans? Who said anything about loans?",
+	loanTaken    = "Here's $%d. You owe me $%d for it. Don't make me come looking.",
 }
 
 local BayRentalService = {}
@@ -81,8 +120,13 @@ type Rental = {
 	lastPos: Vector3?,    -- where the character was at the last check
 	movedAt: number,      -- os.clock() when they last moved
 	short: boolean,       -- the last charge didn't get paid in full
+	strikes: number,      -- late payments (see EVICT_STRIKES)
+	inspectAt: number,    -- workspace:GetServerTimeNow() of the next inspection
+	warned: boolean,      -- told about the next inspection yet
 }
 local rentals: { [Player]: Rental } = {}
+local bannedUntil: { [number]: number } = {} -- [UserId] = GetServerTimeNow() the eviction ban ends
+local loanOffered: { [Player]: boolean } = {} -- shown the loan offer; RequestLoan only counts then
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -102,6 +146,10 @@ local function now(): number
 	return Workspace:GetServerTimeNow()
 end
 
+local function nextInspection(): number
+	return now() + math.random(INSPECT_MIN, INSPECT_MAX)
+end
+
 -- Tells the player's rent panel the bay, the rate and the next charge.
 local function pushRent(player: Player)
 	local rental = rentals[player]
@@ -109,6 +157,8 @@ local function pushRent(player: Player)
 		bay = bayLabel(rental.bay),
 		perMinute = TonyService.RentPerMinute(),
 		nextCharge = rental.nextCharge,
+		strikes = rental.strikes,
+		inspectAt = if rental.warned then rental.inspectAt else nil,
 	} else nil)
 end
 
@@ -171,18 +221,31 @@ local function rent(player: Player)
 		return say(player, LINES.notLoaded)
 	end
 
+	local ban = bannedUntil[player.UserId]
+	if ban and now() < ban then
+		local left = math.ceil(ban - now())
+		return say(player, LINES.banned:format(("%d:%02d"):format(left // 60, left % 60)))
+	end
+	bannedUntil[player.UserId] = nil
+
 	local bay = findFreeBay()
 	if not bay then
 		return say(player, LINES.full)
 	end
 	bay:SetAttribute(ZoneUtils.RENTED_BY_ATTRIBUTE, player.UserId)
-	rentals[player] = { bay = bay, nextCharge = now() + RENT_PERIOD, lastPos = nil, movedAt = os.clock(), short = false }
+	rentals[player] = {
+		bay = bay, nextCharge = now() + RENT_PERIOD, lastPos = nil, movedAt = os.clock(),
+		short = false, strikes = 0, inspectAt = nextInspection(), warned = false,
+	}
 
 	-- The first minute, up front. Can't cover it? Tony still rents the bay —
-	-- it goes on your tab.
+	-- it goes on your tab (and that's a strike).
 	local owed = chargeRent(player)
 	local rental = rentals[player]
-	if rental then rental.short = owed > 0 end
+	if rental then
+		rental.short = owed > 0
+		if owed > 0 then rental.strikes = 1 end
+	end
 	pushRent(player)
 	say(player, if owed > 0
 		then TonyService.Line("tab")
@@ -196,7 +259,61 @@ local function rent(player: Player)
 	log.debug(player.Name, "rented", bay.Name)
 end
 
--- ── Every second: rent due, idle renters ──────────────────────────────────────
+-- ── Strikes and inspections ───────────────────────────────────────────────────
+
+-- After a minute's rent: a strike if it went on the tab, one off if paid.
+-- Returns true if that got them evicted.
+local function noteRentPaid(player: Player, rental: Rental, owed: number): boolean
+	if owed <= 0 then
+		rental.strikes = math.max(0, rental.strikes - 1)
+		return false
+	end
+	rental.strikes += 1
+	if rental.strikes >= EVICT_STRIKES then
+		giveUp(player, LINES.evicted)
+		bannedUntil[player.UserId] = now() + BAN_SECONDS
+		log.info(player.Name, "evicted for late rent")
+		return true
+	elseif rental.strikes == EVICT_STRIKES - 1 then
+		say(player, LINES.lastStrike)
+	elseif rental.strikes == WARN_STRIKES then
+		say(player, LINES.strikesWarn:format(rental.strikes))
+	end
+	return false
+end
+
+-- Tony looks round the bay: a fine for each problem, or a grudging bonus.
+local function inspect(player: Player, rental: Rental)
+	local problems: { string } = {}
+	local floor = PartPickupService.FloorCount(player)
+	if floor > 0 then
+		table.insert(problems, if floor == 1 then "A part on the floor" else floor .. " parts on the floor")
+	end
+	local report = JobService.InspectionReport(player)
+	if report.partsOut > PARTS_OUT_LIMIT then
+		table.insert(problems, report.partsOut .. " parts out of the car at once")
+	end
+	if report.keptWaiting then
+		table.insert(problems, "Your customer's been waiting ages")
+	end
+
+	if #problems == 0 then
+		if TonyService.GetDebt(player) > 0 then
+			TonyService.AdjustDebt(player, CLEAN_DEBT, "clean inspection")
+		else
+			ReputationService.Add(player, CLEAN_STARS, "clean inspection")
+		end
+		say(player, LINES.inspectPass)
+		return
+	end
+	local fine = 0
+	for _ = 1, #problems do fine += math.random(FINE_MIN, FINE_MAX) end
+	TonyService.Charge(player, fine, "inspection fine")
+	say(player, LINES.inspectFail:format(table.concat(problems, ". "), fine))
+	log.debug(player.Name, "failed inspection:", table.concat(problems, "; "), "$" .. fine)
+end
+
+-- ── Every second: rent due, idle renters, inspections ─────────────────────────
 
 task.spawn(function()
 	while true do
@@ -222,10 +339,22 @@ task.spawn(function()
 				rental.nextCharge += RENT_PERIOD
 				local owed = chargeRent(player)
 				-- Tony mentions it when you first run short, not every minute.
-				if owed > 0 and not rental.short then
+				local firstShort = owed > 0 and not rental.short
+				rental.short = owed > 0
+				if noteRentPaid(player, rental, owed) then continue end
+				if firstShort and rental.strikes < WARN_STRIKES then
 					say(player, TonyService.Line("tab"))
 				end
-				rental.short = owed > 0
+				pushRent(player)
+			end
+			if not rental.warned and now() >= rental.inspectAt - INSPECT_WARNING then
+				rental.warned = true
+				say(player, LINES.inspectSoon)
+				pushRent(player)
+			elseif rental.warned and now() >= rental.inspectAt then
+				rental.warned = false
+				rental.inspectAt = nextInspection()
+				inspect(player, rental)
 				pushRent(player)
 			end
 		end
@@ -288,10 +417,45 @@ local function addPrompt(landlord: Model)
 	prompt.Parent                = root
 	prompt.Triggered:Connect(rent)
 
+	-- Borrowing (Desperate mood only): its own key, just under the rent prompt.
+	local loanSpot           = Instance.new("Attachment")
+	loanSpot.Name            = "LoanPrompt"
+	loanSpot.Position        = Vector3.new(0, -1.3, 0)
+	loanSpot.Parent          = root
+	local loan               = Instance.new("ProximityPrompt")
+	loan.ActionText          = "Borrow money"
+	loan.ObjectText          = ("+%d%% on top · desperate times"):format(math.floor(TonyService.LOAN_FEE * 100 + 0.5))
+	loan.Style               = Enum.ProximityPromptStyle.Custom
+	loan:SetAttribute("Tone", "money")
+	loan.KeyboardKeyCode     = LOAN_KEY
+	loan.HoldDuration        = 0
+	loan.MaxActivationDistance = PROMPT_REACH
+	loan.RequiresLineOfSight = false
+	loan.Enabled             = TonyService.GetMood().id == "desperate"
+	loan.Parent              = loanSpot
+	loan.Triggered:Connect(function(player)
+		local ok, why = TonyService.CanLoan(player)
+		if not ok then
+			return say(player, if why == "tooMuchDebt" then LINES.loanNo else LINES.loanNotNow)
+		end
+		loanOffered[player] = true
+		Remotes.LoanOffer:FireClient(player, {
+			amounts = TonyService.LOAN_AMOUNTS,
+			fee = TonyService.LOAN_FEE,
+			debt = TonyService.GetDebt(player),
+		})
+	end)
+
 	local face = addMoodFace(landlord)
 	TonyService.MoodChanged:Connect(function(mood)
 		prompt.ActionText = promptText()
 		if face then face.Text = mood.face end
+		loan.Enabled = mood.id == "desperate"
+		if mood.id ~= "desperate" then
+			-- The offer's off: close any open loan card.
+			for player in pairs(loanOffered) do Remotes.LoanOffer:FireClient(player, nil) end
+			table.clear(loanOffered)
+		end
 		-- Everyone renting sees the new rate on their panel.
 		for player in pairs(rentals) do pushRent(player) end
 	end)
@@ -318,6 +482,21 @@ task.spawn(function()
 	end
 end)
 
+-- ── Loans ─────────────────────────────────────────────────────────────────────
+
+Remotes.RequestLoan.OnServerEvent:Connect(function(player, amount: any)
+	if not loanOffered[player] then return end
+	loanOffered[player] = nil
+	if type(amount) ~= "number" then return end -- "no thanks"
+	local owed = TonyService.TakeLoan(player, amount)
+	if owed then
+		say(player, LINES.loanTaken:format(amount, owed))
+	else
+		local _, why = TonyService.CanLoan(player)
+		say(player, if why == "tooMuchDebt" then LINES.loanNo else LINES.loanNotNow)
+	end
+end)
+
 -- ── Leaving ───────────────────────────────────────────────────────────────────
 
 Remotes.ReleaseBay.OnServerEvent:Connect(function(player)
@@ -326,6 +505,9 @@ end)
 
 -- Leaving ends the shift: the bay goes back to Tony. (The job and its car
 -- are saved by JobService and CarService in their OnBeforeRelease.)
-Players.PlayerRemoving:Connect(release)
+Players.PlayerRemoving:Connect(function(player)
+	loanOffered[player] = nil
+	release(player)
+end)
 
 return BayRentalService

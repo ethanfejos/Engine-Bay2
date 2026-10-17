@@ -387,6 +387,23 @@ local timeLabel = UITheme.Text(bar, "", FF.Mono, 14, C.GlassMuted)
 timeLabel.Size = UDim2.new(0, 130, 1, 0)
 timeLabel.LayoutOrder = 3
 
+-- Late payments: ●●●○○ (5 = Tony evicts you). Hidden with none.
+local strikesLabel = UITheme.Text(bar, "", FF.Bold, 14, C.BadText)
+strikesLabel.Size = UDim2.new(0, 0, 1, 0)
+strikesLabel.AutomaticSize = Enum.AutomaticSize.X
+strikesLabel.LayoutOrder = 4
+strikesLabel.Font = Enum.Font.GothamBold -- BuilderSans has no ● ○
+strikesLabel.Visible = false
+
+-- Tony's inspection countdown, once he's announced one.
+local inspectLabel = UITheme.Text(bar, "", FF.Bold, 14, C.Amber)
+inspectLabel.Size = UDim2.new(0, 0, 1, 0)
+inspectLabel.AutomaticSize = Enum.AutomaticSize.X
+inspectLabel.LayoutOrder = 5
+inspectLabel.Visible = false
+
+local MAX_STRIKES = 5 -- BayRentalService.EVICT_STRIKES
+
 local keysBtn                  = Instance.new("TextButton")
 keysBtn.Size                   = UDim2.new(0, 0, 1, -10)
 keysBtn.AutomaticSize          = Enum.AutomaticSize.X
@@ -397,7 +414,7 @@ keysBtn.FontFace               = FF.Bold
 keysBtn.TextSize               = 13
 keysBtn.TextColor3             = C.BadText
 keysBtn.Text                   = "Hand back keys"
-keysBtn.LayoutOrder            = 5
+keysBtn.LayoutOrder            = 7
 keysBtn.Parent                 = bar
 UITheme.Corner(keysBtn, UITheme.Radius.Pill)
 UITheme.Stroke(keysBtn, C.Bad, 1, 0.65)
@@ -414,7 +431,7 @@ jobsBtn.FontFace               = FF.Bold
 jobsBtn.TextSize               = 13
 jobsBtn.TextColor3             = C.Amber
 jobsBtn.Text                   = "Jobs [J]"
-jobsBtn.LayoutOrder            = 4
+jobsBtn.LayoutOrder            = 6
 jobsBtn.Parent                 = bar
 UITheme.Corner(jobsBtn, UITheme.Radius.Pill)
 UITheme.Stroke(jobsBtn, C.Amber, 1, 0.6)
@@ -433,7 +450,7 @@ Remotes.JobQueue.OnClientEvent:Connect(function(data: any)
 	jobsBtn.TextColor3 = if waiting > 0 and free then C.Glass else C.Amber
 end)
 
-type Rent = { bay: string, perMinute: number, nextCharge: number }
+type Rent = { bay: string, perMinute: number, nextCharge: number, strikes: number, inspectAt: number? }
 local rent: Rent? = nil
 local money = 0
 local hasJob = false
@@ -445,7 +462,11 @@ Remotes.TonyStatus.OnClientEvent:Connect(function(status: any)
 	local r = status.rent
 	if type(r) == "table" and type(r.bay) == "string"
 		and type(r.perMinute) == "number" and type(r.nextCharge) == "number" then
-		rent = { bay = r.bay, perMinute = r.perMinute, nextCharge = r.nextCharge }
+		rent = {
+			bay = r.bay, perMinute = r.perMinute, nextCharge = r.nextCharge,
+			strikes = if type(r.strikes) == "number" then r.strikes else 0,
+			inspectAt = if type(r.inspectAt) == "number" then r.inspectAt else nil,
+		}
 	else
 		rent = nil
 	end
@@ -489,6 +510,14 @@ RunService.RenderStepped:Connect(function()
 		timeLabel.FontFace = FF.Mono
 		timeLabel.TextColor3 = if short then C.BadText else C.GlassMuted
 		timeLabel.Size = UDim2.new(0, 130, 1, 0)
+	end
+	strikesLabel.Visible = r.strikes > 0 and not armedAt
+	strikesLabel.Text = ("Late %s"):format(string.rep("●", r.strikes) .. string.rep("○", math.max(0, MAX_STRIKES - r.strikes)))
+	local inspectAt = r.inspectAt
+	inspectLabel.Visible = inspectAt ~= nil and not armedAt
+	if inspectAt then
+		local left = math.max(0, math.ceil(inspectAt - Workspace:GetServerTimeNow()))
+		inspectLabel.Text = ("Inspection %d:%02d"):format(left // 60, left % 60)
 	end
 	bar.BackgroundColor3 = if short then Color3.fromHex("280E0E") else C.Glass
 	barStroke.Color = if short then C.Bad else Color3.new(1, 1, 1)

@@ -54,6 +54,9 @@ local MOOD_MINUTES   = 20
 local WORK_OFF_AT    = 200   -- owing this much or more: he takes WORK_OFF_SHARE, no interest
 local REPAY_SHARE    = 0.50
 local WORK_OFF_SHARE = 0.75
+local LOAN_AMOUNTS   = { 50, 100, 200 } -- what Desperate Tony will lend
+local LOAN_FEE       = 0.30  -- added to what you owe: borrow $100, owe $130
+local LOAN_LIMIT     = 200   -- no loans once you owe this much
 
 export type Mood = {
 	id: string,
@@ -77,6 +80,7 @@ local MOODS: { Mood } = {
 			rented   = "Bay %s's yours, kid. $%d a minute. Practically charity.",
 			tab      = "No cash? Eh, it goes on your tab. Today only, I'm a saint.",
 			stoleTip = "I'll mind that tip for you. Forever.",
+			upsold   = "Blinker fluid? Ha! I taught you well. Half's mine.",
 			fine     = "Happens. Still costs you $%d.",
 			debt     = "Pay me when you can, kid. You owe me $%d.",
 		},
@@ -89,6 +93,7 @@ local MOODS: { Mood } = {
 			rented   = "Bay %s's yours. $%d a minute, every minute. Customers'll turn up.",
 			tab      = "No cash? It goes on your tab. And I don't forget a tab.",
 			stoleTip = "Tip? Business expenses.",
+			upsold   = "Blinker fluid? Ha! I taught you well. Half of that's mine.",
 			fine     = "You turned away a paying customer. That's $%d.",
 			debt     = "You owe me $%d. Don't forget it.",
 		},
@@ -101,6 +106,7 @@ local MOODS: { Mood } = {
 			rented   = "Bay %s. $%d a minute. Rent's up. Don't argue.",
 			tab      = "Broke AGAIN? Fine. Tab. With interest.",
 			stoleTip = "Tip? What tip?",
+			upsold   = "Nice. Now hand over my half.",
 			fine     = "Cancelling on my time? $%d. Pay up.",
 			debt     = "You owe me $%d. Interest is up. Funny how that works.",
 		},
@@ -113,6 +119,7 @@ local MOODS: { Mood } = {
 			rented   = "BAY %s. $%d A MINUTE. GET OUT OF MY FACE.",
 			tab      = "NO MONEY?! TAB. I'M WRITING IT IN PEN.",
 			stoleTip = "MINE.",
+			upsold   = "HALF. NOW.",
 			fine     = "You just cost me money. $%d. NOW.",
 			debt     = "$%d. Every job, you pay me. Every. Single. One.",
 		},
@@ -125,6 +132,7 @@ local MOODS: { Mood } = {
 			rented   = "Bay %s, $%d a minute. Please. I need this.",
 			tab      = "On the tab, sure, sure. Fifteen percent. I've got bills, kid.",
 			stoleTip = "I'll, uh, borrow that tip.",
+			upsold   = "Oh thank god. I'll take half of that, if that's alright.",
 			fine     = "Cancelling? I need that money! $%d.",
 			debt     = "You owe me $%d. Any chance you could pay it faster?",
 		},
@@ -139,7 +147,13 @@ TonyService.MoodChanged = Signal.new() -- (mood)
 
 local mood: Mood = MOODS[2] -- normal until the first pick
 
-type RentInfo = { bay: string, perMinute: number, nextCharge: number }
+type RentInfo = {
+	bay: string,
+	perMinute: number,
+	nextCharge: number,
+	strikes: number?,       -- late payments (BayRentalService); 5 = evicted
+	inspectAt: number?,     -- workspace:GetServerTimeNow() when the announced inspection happens
+}
 local rentInfo: { [Player]: RentInfo } = {}
 type Tally = { minutes: number, amount: number }
 local rentTally: { [Player]: Tally } = {}
@@ -223,6 +237,34 @@ function TonyService.Charge(player: Player, amount: number, reason: string): (nu
 	return paid, owed
 end
 
+-- Knocks `amount` off (or, negative, adds to) the player's debt.
+function TonyService.AdjustDebt(player: Player, amount: number, reason: string)
+	addDebt(player, -round(amount), reason)
+end
+
+-- ── Public: loans (Desperate mood only) ───────────────────────────────────────
+
+TonyService.LOAN_AMOUNTS = LOAN_AMOUNTS
+TonyService.LOAN_FEE = LOAN_FEE
+TonyService.LOAN_LIMIT = LOAN_LIMIT
+
+-- Whether Tony will lend to this player right now, and why not.
+function TonyService.CanLoan(player: Player): (boolean, string?)
+	if mood.id ~= "desperate" then return false, "notDesperate" end
+	if TonyService.GetDebt(player) >= LOAN_LIMIT then return false, "tooMuchDebt" end
+	return true, nil
+end
+
+-- Lends `amount` (one of LOAN_AMOUNTS): the cash now, plus the fee on your
+-- debt. Returns what you now owe for it, or nil if he won't.
+function TonyService.TakeLoan(player: Player, amount: number): number?
+	if not table.find(LOAN_AMOUNTS, amount) or not TonyService.CanLoan(player) then return nil end
+	local owed = round(amount * (1 + LOAN_FEE))
+	MoneyService.AddMoney(player, amount, "loan from Tony")
+	addDebt(player, owed, "loan")
+	return owed
+end
+
 -- ── Public: rent bookkeeping (BayRentalService) ───────────────────────────────
 
 -- The rent panel's numbers for this player, or nil when they have no bay.
@@ -259,6 +301,8 @@ export type Settlement = {
 	moodLabel: string,
 	tip: number,          -- the tip the customer gave
 	tipStolen: boolean,   -- Tony pocketed it
+	extras: number,       -- extras the customer paid for (Upsell)
+	extrasCut: number,    -- Tony's share of them
 	interest: number,     -- added to the debt
 	repayment: number,    -- taken off what you'd take home, towards the debt
 	debtBefore: number,
@@ -267,15 +311,18 @@ export type Settlement = {
 }
 
 -- Works out (and applies) Tony's side of a finished job: takes the cut,
--- maybe the tip, adds interest, takes the repayment, and pays the player
--- the rest. Returns every number for the receipt.
-function TonyService.SettleJob(player: Player, pay: number, tip: number): Settlement
+-- maybe the tip, his share of any extras, adds interest, takes the
+-- repayment, and pays the player the rest. Returns every number for the
+-- receipt.
+function TonyService.SettleJob(player: Player, pay: number, tip: number, extras: number?, extrasShare: number?): Settlement
 	local profile = profileOf(player)
 	local debtBefore = if profile then profile.Data.tonyDebt else 0
 
 	local cut = round(pay * mood.cut)
 	local tipStolen = tip > 0 and math.random() < mood.tipSteal
-	local takeHome = pay - cut + (if tipStolen then 0 else tip)
+	local extraTotal = extras or 0
+	local extrasCut = round(extraTotal * (extrasShare or 0))
+	local takeHome = pay - cut + (if tipStolen then 0 else tip) + extraTotal - extrasCut
 
 	local interest, repayment = 0, 0
 	local debt = debtBefore
@@ -306,6 +353,8 @@ function TonyService.SettleJob(player: Player, pay: number, tip: number): Settle
 		moodLabel  = mood.label,
 		tip        = tip,
 		tipStolen  = tipStolen,
+		extras     = extraTotal,
+		extrasCut  = extrasCut,
 		interest   = interest,
 		repayment  = repayment,
 		debtBefore = debtBefore,

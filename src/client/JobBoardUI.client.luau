@@ -93,6 +93,10 @@ screen.Name                 = "JobBoardUI"
 screen.ResetOnSpawn         = false
 screen.IgnoreGuiInset       = true
 screen.DisplayOrder         = 6
+-- Layers count within each frame (pages above the peeking pages, the text
+-- above its page). Without this, ZIndex is screen-wide and the paper would
+-- be drawn over its own writing.
+screen.ZIndexBehavior       = Enum.ZIndexBehavior.Sibling
 screen.Enabled              = false
 screen.Parent               = playerGui
 

@@ -14,6 +14,11 @@
     - weight     how often they turn up, among the types you've unlocked
     - requests   what they say ("%s" = the parts, e.g. "the Starter and the Fan")
 
+    Clueless customers are special: they turn up by chance (CLUELESS_CHANCE,
+    about 1 in 15, at any reputation) rather than by weight, and they look
+    like Regulars on the job board and work order — you spot them from what
+    they say. They'll pay for extras they don't need (Upsell).
+
     Patience: finishing fast keeps the tip whole; the slower you are, the
     smaller it gets (down to TIP_FLOOR of it). If patience runs out the
     customer leaves angry — no pay, a reputation hit, and Tony's fine.
@@ -37,6 +42,9 @@ local CustomerTypes = {}
 
 -- The tip never shrinks below this share of the full tip, however slow.
 CustomerTypes.TIP_FLOOR = 0.3
+
+-- How often a customer is Clueless (whatever your reputation).
+CustomerTypes.CLUELESS_CHANCE = 1 / 15
 
 -- A job handed back with at least this share of patience left is "quick".
 CustomerTypes.QUICK_SHARE = 0.5
@@ -97,6 +105,19 @@ local TYPES: { CustomerType } = {
 		},
 		leaving = "I don't wait. Ever. Goodbye.",
 	},
+	{
+		-- Looks like a Regular (same label); picked by CLUELESS_CHANCE, not weight.
+		id = "clueless", label = "REGULAR",
+		pay = 1, tip = { 5, 15 }, patience = 10 * 60, fixedAt = 70,
+		minStars = 0, weight = 0, perfectBonus = false,
+		requests = {
+			"The car makes a noise. Or maybe that's the radio? My cousin reckons it's %s.",
+			"Is the engine the one in the front? Anyway, %s apparently. Whatever that is.",
+			"My cousin said it needs new blinker fluid. And something about %s.",
+			"I don't really know cars. Someone said %s? Is that bad?",
+		},
+		leaving = "Oh, it's been ages. I'll just push it home I guess.",
+	},
 }
 
 local byId: { [string]: CustomerType } = {}
@@ -113,14 +134,18 @@ end
 function CustomerTypes.Unlocked(stars: number): { CustomerType }
 	local out = {}
 	for _, t in ipairs(TYPES) do
-		if stars >= t.minStars then table.insert(out, t) end
+		if stars >= t.minStars and t.weight > 0 then table.insert(out, t) end
 	end
 	return out
 end
 
--- A random customer type for a player with `stars` reputation. `roll` (0–1)
--- is for tests; normally random.
+-- A random customer type for a player with `stars` reputation (now and
+-- then a Clueless one). `roll` (0–1) is for tests; normally random, and a
+-- test roll never gives Clueless.
 function CustomerTypes.Pick(stars: number, roll: number?): CustomerType
+	if roll == nil and math.random() < CustomerTypes.CLUELESS_CHANCE then
+		return byId.clueless
+	end
 	local pool = CustomerTypes.Unlocked(stars)
 	local total = 0
 	for _, t in ipairs(pool) do total += t.weight end

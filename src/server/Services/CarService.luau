@@ -27,6 +27,11 @@
     - When the worker leaves, each of their cars is saved one last time and
       removed.
 
+    Parked cars: SpawnParked(record, spot) puts a look-alike of a car in a
+    parking space (customers waiting outside — JobService). It's just for
+    show: no id, no worker, nothing on it works, and it isn't saved. It's
+    removed with :Destroy() when the customer is taken or leaves.
+
     Own cars: SpawnActiveCar spawns the player's garage car (a starter car
     if they have none). Not used right now — players work on customers'
     cars until the junkyard exists (BayRentalService.SPAWN_OWN_CAR).
@@ -268,7 +273,7 @@ local function placeInZone(car: Model, zone: BasePart)
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	local ignore: { Instance } = { car }
-	for _, name in ipairs({ "EngineZones", "DroppedParts" }) do
+	for _, name in ipairs({ "EngineZones", "DroppedParts", "NPCs", "Cars", "ParkedCars", "ParkingSpots" }) do
 		local folder = Workspace:FindFirstChild(name)
 		if folder then table.insert(ignore, folder) end
 	end
@@ -279,13 +284,24 @@ local function placeInZone(car: Model, zone: BasePart)
 	params.FilterDescendantsInstances = ignore
 	params.RespectCanCollide = true
 
-	local top = zone.Position + Vector3.new(0, zone.Size.Y / 2, 0)
-	local hit = Workspace:Raycast(top, Vector3.new(0, -(zone.Size.Y + 50), 0), params)
+	-- Look for the floor from the MIDDLE of the bay down, not from its top:
+	-- a tall bay part can poke up through the garage roof, and a ray from
+	-- its top would land the car on the roof.
+	local hit = Workspace:Raycast(zone.Position, Vector3.new(0, -(zone.Size.Y / 2 + 50), 0), params)
 	local floorY = if hit then hit.Position.Y else zone.Position.Y - zone.Size.Y / 2
 
 	-- Centre the car's box over the bay and sit it on the floor.
 	local shift = Vector3.new(zone.Position.X - boxCFrame.Position.X, floorY + FLOOR_GAP - bottomY, zone.Position.Z - boxCFrame.Position.Z)
 	car:PivotTo(car:GetPivot() + shift)
+end
+
+-- Where look-alike cars waiting in the car park live.
+local parkedFolder = Workspace:FindFirstChild("ParkedCars")
+if not parkedFolder then
+	local folder  = Instance.new("Folder")
+	folder.Name   = "ParkedCars"
+	folder.Parent = Workspace
+	parkedFolder  = folder
 end
 
 -- ── Spawning and despawning ───────────────────────────────────────────────────
@@ -393,6 +409,40 @@ function CarService.SpawnCar(worker: Player, record: CarRecord, zone: BasePart, 
 	syncInspections(worker, record)
 	log.debug("Spawned", record.model, "for", worker.Name, "in", zone.Name)
 	return car
+end
+
+-- A look-alike of the car `record` describes, parked in `spot` (a part in
+-- Workspace.ParkingSpots, used like a bay: centred on it, on the floor,
+-- turned the way the part is turned). For show only — see the header.
+function CarService.SpawnParked(record: CarRecord, spot: BasePart): Model?
+	local templates = getTemplates()
+	local template = templates and templates:FindFirstChild(record.model)
+	if not template or not template:IsA("Model") then return nil end
+	local ok, result = pcall(function(): Model
+		local car = template:Clone()
+		applyRecord(car, record)
+		-- Nothing on it works: no engine trigger (so it never counts as a
+		-- car), no prompts, clicks or scripts.
+		for _, d in ipairs(car:GetDescendants()) do
+			if d.Name == "EngineTrigger" or d:IsA("ProximityPrompt") or d:IsA("ClickDetector") then
+				d:Destroy()
+			elseif d:IsA("Seat") then
+				d.Disabled = true -- nobody sits in a customer's waiting car
+			elseif d:IsA("VehicleSeat") then
+				d.Disabled = true
+			end
+		end
+		holdStill(car)
+		placeInZone(car, spot)
+		car.Name = record.model .. " (waiting)"
+		car.Parent = parkedFolder
+		return car
+	end)
+	if not ok then
+		log.warn("Couldn't park", record.model, result)
+		return nil
+	end
+	return result
 end
 
 -- Saves and removes a spawned car (e.g. a customer's car going home).

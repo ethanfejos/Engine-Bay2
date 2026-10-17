@@ -38,11 +38,26 @@
     (JobBoardUI; JobQueue server -> client, TakeJob client -> server); then
     their car comes in and the job runs as above.
 
+    THE CAR PARK: while they queue, each customer waits outside with their
+    car in a parking space (a look-alike, CarService.SpawnParked). You can
+    walk up and take the job there too ("Take job" prompt, only you see it).
+    Spaces: parts in Workspace.ParkingSpots with a "Bay" attribute naming
+    the bay they belong to (the bay part's name, e.g. "Mechanic_1"); the
+    lowest "Order" attribute (then name) fills first. A "CustomerSpot" part
+    inside a space is where the customer stands; otherwise beside the car.
+    No free space for your bay: they still queue, just on the board only.
+
     REGULARS (phase 5): from REGULAR_STARS, a customer whose job you handed
     back quickly remembers you (profile.Data.regulars, their car as you
     left it). Now and then (REPEAT_CHANCE) a regular comes back instead of
     a stranger: same car, new problem, REPEAT_TIP times the tip. One who
     walks out on you (or whose job you cancel) stops coming back.
+
+    EXTRAS (Upsell): once the work's done, the work order lists extras you
+    can tick (SetExtras, client -> server) before handing back. A normal
+    customer refuses and tips less; a Clueless one pays — unless you push
+    it and they catch on (no extras, a reputation hit, never back). Tony
+    takes his share of extras paid.
 
     Saved: the job, with the customer's car as it is right now, lives in
     profile.Data.activeJob. Leaving mid-job saves it; renting a bay again
@@ -72,6 +87,7 @@ local ProfileManager    = require(script.Parent.Parent.Modules.ProfileManager)
 local SaveData          = require(script.Parent.Parent.Modules.SaveData)
 local Npc               = require(script.Parent.Parent.Modules.Npc)
 local CustomerTypes     = require(script.Parent.Parent.Modules.CustomerTypes)
+local Upsell            = require(script.Parent.Parent.Modules.Upsell)
 local CarService        = require(script.Parent.CarService)
 local LevelService      = require(script.Parent.LevelService)
 local InventoryService  = require(script.Parent.InventoryService)
@@ -94,6 +110,7 @@ local FIRST_CUSTOMER_DELAY = 3           -- seconds after renting
 local NEXT_CUSTOMER_DELAY  = 6           -- seconds after a job ends
 local CUSTOMER_GAP         = 3           -- studs between the bay's edge and the customer (when no CustomerSpot)
 local PROMPT_REACH         = 10
+local PARKED_GAP           = 2           -- studs between a parking space's side and its waiting customer
 local LAST_CHANCE          = 30          -- seconds of patience a resumed job gets if it had none left
 local MAX_QUEUE            = 3           -- customers waiting outside at once
 local ARRIVAL_GAP          = 12          -- seconds between customers joining the queue
@@ -114,6 +131,9 @@ local LINES = {
 	lostBay   = "Where's my car going?! Forget it, I'm off.",
 	notYours  = "Sorry, I'm waiting on someone else.",
 	backAgain = "Back again! You did a great job last time. ",
+	refused   = "%s? Do I look stupid? Just the job, thanks. Here's your $%d.",
+	caught    = "Hang on. %s isn't even a thing, is it? I'm not paying for any of that. Here's your $%d.",
+	paidExtras = "Wow, all that? Thanks for looking after it so well! Here's your $%d.",
 	gaveUp    = "Been standing out here for ages. I'm off.",
 	firstHint = "Customers are lining up outside your bay. Job board's on the wall — press J and pick one.",
 }
@@ -132,6 +152,7 @@ type Active = {
 	startedServer: number, -- workspace:GetServerTimeNow() when the job started, earlier sessions included (the work order's timer)
 	patience: number,      -- seconds the customer waits in total
 	deadline: number,      -- workspace:GetServerTimeNow() when their patience runs out
+	extras: { string },    -- extras ticked on the work order (Upsell)
 }
 
 local active: { [Player]: Active } = {}      -- the job each player is working on
@@ -144,6 +165,10 @@ type Queued = {
 	kind: CustomerTypes.CustomerType,
 	wait: number,      -- seconds they'll wait outside in total
 	deadline: number,  -- workspace:GetServerTimeNow() when they give up
+	spot: BasePart?,   -- their parking space, if they got one
+	parked: Model?,    -- their car waiting in it
+	waiting: Model?,   -- the customer standing by it
+	gone: boolean?,    -- left the queue (taken or gave up): don't show them
 }
 local queues: { [Player]: { Queued } } = {}  -- customers waiting outside each player's bay
 local hinted: { [Player]: boolean } = {}     -- Tony has explained the job board this shift
@@ -232,6 +257,17 @@ local function progress(job: JobRecord): ({ Task }, boolean)
 	return tasks, complete
 end
 
+-- The extras menu for the work order, with what's ticked.
+local function extrasFor(a: Active): { { id: string, label: string, price: number, selected: boolean } }
+	local ticked: { [string]: boolean } = {}
+	for _, id in ipairs(a.extras) do ticked[id] = true end
+	local out = {}
+	for _, e in ipairs(Upsell.EXTRAS) do
+		table.insert(out, { id = e.id, label = e.label, price = e.price, selected = ticked[e.id] == true })
+	end
+	return out
+end
+
 local function sendUpdate(player: Player)
 	local a = active[player]
 	if not a then
@@ -250,13 +286,15 @@ local function sendUpdate(player: Player)
 		startedAt      = a.startedServer,
 		quickSeconds   = a.patience * (1 - CustomerTypes.QUICK_SHARE),
 		customerType   = a.kind.label,
-		customerKind   = a.kind.id,
+		-- Clueless customers look like Regulars on the work order.
+		customerKind   = if a.kind.id == "clueless" then "regular" else a.kind.id,
 		repeatVisit    = a.job.repeatVisit == true,
 		patience       = a.patience,
 		deadline       = a.deadline,
 		-- What cancelling would cost right now (shown before you confirm).
 		cancelFine     = math.max(1, math.floor(a.job.pay * TonyService.GetMood().cancelFine + 0.5)),
 		cancelStars    = -ReputationService.CHANGES.cancelled,
+		extras         = if complete then extrasFor(a) else nil,
 	})
 end
 
@@ -279,7 +317,7 @@ local function customerSpot(bay: BasePart, player: Player): CFrame
 	end
 
 	local ignore: { Instance } = {}
-	for _, name in ipairs({ "EngineZones", "Cars", "NPCs", "DroppedParts" }) do
+	for _, name in ipairs({ "EngineZones", "Cars", "ParkedCars", "ParkingSpots", "NPCs", "DroppedParts" }) do
 		local folder = Workspace:FindFirstChild(name)
 		if folder then table.insert(ignore, folder) end
 	end
@@ -396,8 +434,13 @@ local function handBack(player: Player, triggering: Player, a: Active)
 	if a.job.repeatVisit then
 		tip = math.floor(tip * REPEAT_TIP + 0.5)
 	end
+	-- Extras: refused (and a smaller tip), paid, or caught out (Upsell).
+	local upsell = Upsell.Evaluate(a.kind.id, a.extras)
+	if upsell.outcome == "refused" then
+		tip = math.floor(tip * Upsell.REFUSED_TIP + 0.5)
+	end
 	local rent = TonyService.TakeRentTally(player)
-	local s = TonyService.SettleJob(player, a.job.pay, tip)
+	local s = TonyService.SettleJob(player, a.job.pay, tip, upsell.total, Upsell.TONY_SHARE)
 
 	LevelService.AddXP(player, LevelService.XP_AWARDS.job, "job")
 	-- Quick = at least half their patience left. Fussy and Rich customers
@@ -410,11 +453,17 @@ local function handBack(player: Player, triggering: Player, a: Active)
 		change, why = ReputationService.CHANGES.quickJob, "quick job"
 	end
 	local stars = ReputationService.Add(player, change, why)
+	if upsell.outcome == "caught" then
+		stars = ReputationService.Add(player, ReputationService.CHANGES.caughtUpsell, "caught upselling")
+	end
 	InventoryService.RemovePartsFromCar(player, a.job.car.id) -- normally none left
 
 	-- A quick job from REGULAR_STARS up: they'll remember you.
 	local profile = ProfileManager.GetProfile(player)
-	if profile and quick and stars >= REGULAR_STARS then
+	local regularKeyNow = regularKey(a.job.customerName, a.job.customerUserId)
+	if profile and upsell.outcome == "caught" then
+		profile.Data.regulars[regularKeyNow] = nil -- they won't be back
+	elseif profile and quick and stars >= REGULAR_STARS then
 		local key = regularKey(a.job.customerName, a.job.customerUserId)
 		local regulars = profile.Data.regulars
 		local existing = regulars[key]
@@ -437,8 +486,22 @@ local function handBack(player: Player, triggering: Player, a: Active)
 	end
 	worked(player)
 
-	say(player, a.job, LINES.thanks:format(a.job.pay + tip))
+	local paid = a.job.pay + tip + upsell.total
+	local firstExtra = Upsell.Clean(a.extras)[1]
+	if upsell.outcome == "refused" and firstExtra then
+		say(player, a.job, LINES.refused:format(firstExtra.label, paid))
+	elseif upsell.outcome == "caught" and firstExtra then
+		say(player, a.job, LINES.caught:format(firstExtra.label, paid))
+	elseif upsell.outcome == "paid" then
+		say(player, a.job, LINES.paidExtras:format(paid))
+	else
+		say(player, a.job, LINES.thanks:format(paid))
+	end
 	local delay = TONY_LINE_DELAY
+	if upsell.outcome == "paid" then
+		tonyLater(player, delay, TonyService.Line("upsold"))
+		delay += TONY_LINE_DELAY
+	end
 	if s.tipStolen then
 		tonyLater(player, delay, TonyService.Line("stoleTip"))
 		delay += TONY_LINE_DELAY
@@ -455,6 +518,9 @@ local function handBack(player: Player, triggering: Player, a: Active)
 		local amount = if i == #a.job.faults then a.job.pay - each * (#a.job.faults - 1) else each
 		table.insert(lines, { label = partLabel(path), amount = amount })
 	end
+	for _, e in ipairs(upsell.lines) do
+		table.insert(lines, { label = e.label, amount = e.price })
+	end
 	Remotes.JobReceipt:FireClient(player, {
 		invoice      = a.job.id,
 		time         = os.time(),
@@ -463,7 +529,8 @@ local function handBack(player: Player, triggering: Player, a: Active)
 		car          = a.job.car.model,
 		mechanic     = player.DisplayName,
 		lines        = lines,
-		subtotal     = s.pay,
+		subtotal     = s.pay + s.extras,
+		extrasCut    = s.extrasCut,
 		tonyCut      = s.cut,
 		cutPercent   = s.cutPercent,
 		mood         = s.moodLabel,
@@ -494,7 +561,7 @@ local function spawnJob(player: Player, bay: BasePart, job: JobRecord): boolean
 	local waited = job.waited or 0
 	local now = Workspace:GetServerTimeNow()
 	local a: Active = {
-		job = job, kind = kind, bay = bay, car = car, customer = nil,
+		job = job, kind = kind, bay = bay, car = car, customer = nil, extras = {},
 		startedAt = os.clock(), startedServer = now - waited,
 		patience = patience,
 		deadline = now + math.max(LAST_CHANCE, patience - waited),
@@ -697,7 +764,7 @@ sendQueue = function(player: Player)
 			customerName   = q.job.customerName,
 			customerUserId = q.job.customerUserId,
 			car            = q.job.car.model,
-			customerKind   = q.kind.id,
+			customerKind   = if q.kind.id == "clueless" then "regular" else q.kind.id,
 			customerType   = q.kind.label,
 			request        = q.job.request,
 			pay            = q.job.pay,
@@ -713,11 +780,127 @@ sendQueue = function(player: Player)
 	Remotes.JobQueue:FireClient(player, { jobs = list, busy = active[player] ~= nil, open = if bays[player] then true else false })
 end
 
+-- ── The car park ──────────────────────────────────────────────────────────────
+
+local takeJob: (Player, string) -> () -- defined below
+
+-- The parking spaces that belong to `bay`, in the order they fill.
+local function spotsFor(bay: BasePart): { BasePart }
+	local folder = Workspace:FindFirstChild("ParkingSpots")
+	local list: { BasePart } = {}
+	if not folder then return list end
+	for _, d in ipairs(folder:GetDescendants()) do
+		if d:IsA("BasePart") and d:GetAttribute("Bay") == bay.Name then
+			table.insert(list, d)
+		end
+	end
+	table.sort(list, function(a, b)
+		local oa, ob = a:GetAttribute("Order"), b:GetAttribute("Order")
+		local na = if type(oa) == "number" then oa else math.huge
+		local nb = if type(ob) == "number" then ob else math.huge
+		if na ~= nb then return na < nb end
+		return a.Name < b.Name
+	end)
+	return list
+end
+
+local function freeSpot(player: Player, bay: BasePart): BasePart?
+	local used: { [BasePart]: boolean } = {}
+	for _, q in ipairs(queues[player] or {}) do
+		if q.spot then used[q.spot] = true end
+	end
+	for _, spot in ipairs(spotsFor(bay)) do
+		if not used[spot] then return spot end
+	end
+	return nil
+end
+
+-- Where a waiting customer stands: the space's CustomerSpot, or on the
+-- floor beside the space, facing the bay.
+local function parkedCustomerSpot(spot: BasePart, bay: BasePart): CFrame
+	local placed = spot:FindFirstChild("CustomerSpot")
+	local ground: Vector3
+	if placed and placed:IsA("BasePart") then
+		ground = placed.Position + Vector3.new(0, placed.Size.Y / 2, 0)
+	else
+		local side = Vector3.new(spot.CFrame.RightVector.X, 0, spot.CFrame.RightVector.Z)
+		side = if side.Magnitude > 0.01 then side.Unit else Vector3.xAxis
+		-- The side nearer the bay.
+		if (spot.Position + side - bay.Position).Magnitude > (spot.Position - side - bay.Position).Magnitude then
+			side = -side
+		end
+		local beside = spot.Position + side * (spot.Size.X / 2 + PARKED_GAP)
+		local ignore: { Instance } = {}
+		for _, name in ipairs({ "EngineZones", "Cars", "ParkedCars", "ParkingSpots", "NPCs", "DroppedParts" }) do
+			local folder = Workspace:FindFirstChild(name)
+			if folder then table.insert(ignore, folder) end
+		end
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p.Character then table.insert(ignore, p.Character) end
+		end
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		params.FilterDescendantsInstances = ignore
+		params.RespectCanCollide = true
+		local hit = Workspace:Raycast(beside + Vector3.new(0, spot.Size.Y / 2 + 5, 0), Vector3.new(0, -(spot.Size.Y + 60), 0), params)
+		ground = if hit then hit.Position else beside - Vector3.new(0, spot.Size.Y / 2, 0)
+	end
+	return CFrame.lookAt(ground, Vector3.new(bay.Position.X, ground.Y, bay.Position.Z))
+end
+
+-- Takes a customer's car and themselves out of the car park.
+local function unpark(q: Queued)
+	q.gone = true
+	if q.parked then q.parked:Destroy() end
+	if q.waiting then q.waiting:Destroy() end
+	q.parked, q.waiting, q.spot = nil, nil, nil
+end
+
+-- Parks a newly queued customer's car outside, with them beside it.
+local function park(player: Player, bay: BasePart, q: Queued)
+	local spot = freeSpot(player, bay)
+	if not spot then return end
+	q.spot = spot
+	q.parked = CarService.SpawnParked(q.job.car, spot)
+	task.spawn(function()
+		local npc = Npc.Spawn(q.job.customerName, parkedCustomerSpot(spot, bay), q.job.customerUserId)
+		if not npc then return end
+		if q.gone then
+			npc:Destroy() -- taken or gave up while the avatar loaded
+			return
+		end
+		q.waiting = npc
+		local root = npc:FindFirstChild("HumanoidRootPart")
+		if root and root:IsA("BasePart") then
+			local prompt                 = Instance.new("ProximityPrompt")
+			prompt.ActionText            = "Take job"
+			prompt.ObjectText            = ("%s · %s · $%d"):format(q.job.customerName, q.kind.label, q.job.pay)
+			prompt.Style                 = Enum.ProximityPromptStyle.Custom
+			prompt:SetAttribute("Tone", "done")
+			prompt:SetAttribute("OnlyUserId", player.UserId) -- other players don't see it (CustomPromptManager)
+			prompt.HoldDuration          = 0
+			prompt.MaxActivationDistance = PROMPT_REACH
+			prompt.RequiresLineOfSight   = false
+			prompt.Parent                = root
+			prompt.Triggered:Connect(function(triggering)
+				if triggering == player then takeJob(player, q.job.id) end
+			end)
+		end
+	end)
+end
+
+-- Everyone waiting outside goes (lost the bay, or left the game).
+local function clearQueue(player: Player)
+	for _, q in ipairs(queues[player] or {}) do unpark(q) end
+	queues[player] = nil
+end
+
 local function removeQueued(player: Player, q: Queued): boolean
 	local queue = queues[player]
 	local i = queue and table.find(queue, q)
 	if not queue or not i then return false end
 	table.remove(queue, i)
+	unpark(q)
 	return true
 end
 
@@ -733,6 +916,8 @@ local function arrive(player: Player): boolean
 	local kind = CustomerTypes.Get(job.kind)
 	local wait = if kind.id == "rush" then RUSH_QUEUE_WAIT else QUEUE_WAIT
 	local q: Queued = { job = job, kind = kind, wait = wait, deadline = Workspace:GetServerTimeNow() + wait }
+	local bay = bays[player]
+	if bay then park(player, bay, q) end
 	table.insert(queue, q)
 	sendQueue(player)
 
@@ -767,8 +952,8 @@ scheduleNext = function(player: Player, delay: number)
 	end)
 end
 
--- The player picked a customer on the job board.
-local function takeJob(player: Player, jobId: string)
+-- The player picked a customer (on the job board, or in the car park).
+takeJob = function(player: Player, jobId: string)
 	local bay = bays[player]
 	local profile = ProfileManager.GetProfile(player)
 	if not bay or not profile or active[player] then return end
@@ -795,6 +980,7 @@ end
 -- saved job, and customers start queuing outside.
 function JobService.BayRented(player: Player, bay: BasePart)
 	bays[player] = bay
+	clearQueue(player)
 	queues[player] = {}
 	worked(player)
 	local profile = ProfileManager.GetProfile(player)
@@ -804,6 +990,19 @@ function JobService.BayRented(player: Player, bay: BasePart)
 	end
 	sendQueue(player)
 	scheduleNext(player, FIRST_CUSTOMER_DELAY)
+end
+
+-- What Tony's inspector sees in the bay (BayRentalService): how many of the
+-- job car's parts are out, and whether the customer has been kept waiting
+-- more than half their patience. No job: nothing to see.
+function JobService.InspectionReport(player: Player): { partsOut: number, keptWaiting: boolean }
+	local a = active[player]
+	if not a then return { partsOut = 0, keptWaiting = false } end
+	local out = 0
+	for _, path in ipairs(CarService.GetPartPaths(a.job.car.model)) do
+		if a.job.car.missing[path] then out += 1 end
+	end
+	return { partsOut = out, keptWaiting = patienceLeft(a) < 0.5 }
 end
 
 -- Seconds since the player last did any work: a part out or in, a job
@@ -820,7 +1019,7 @@ function JobService.BayReleased(player: Player)
 	bays[player] = nil
 	nextToken[player] = nil
 	lastWork[player] = nil
-	queues[player] = nil
+	clearQueue(player)
 	hinted[player] = nil
 	local a = active[player]
 	if a then cancelJob(player, a, LINES.lostBay) end
@@ -869,6 +1068,16 @@ Remotes.TakeJob.OnServerEvent:Connect(function(player, jobId: any)
 	if type(jobId) == "string" then takeJob(player, jobId) end
 end)
 
+-- Extras ticked on the work order.
+Remotes.SetExtras.OnServerEvent:Connect(function(player, ids: any)
+	local a = active[player]
+	if not a or type(ids) ~= "table" then return end
+	local clean = {}
+	for _, e in ipairs(Upsell.Clean(ids)) do table.insert(clean, e.id) end
+	a.extras = clean
+	sendUpdate(player)
+end)
+
 -- Leaving: the job stays saved (CarService saves and removes the car into
 -- this same record); the customer goes.
 ProfileManager.OnBeforeRelease(function(player)
@@ -882,7 +1091,7 @@ ProfileManager.OnBeforeRelease(function(player)
 	bays[player] = nil
 	nextToken[player] = nil
 	lastWork[player] = nil
-	queues[player] = nil
+	clearQueue(player)
 	hinted[player] = nil
 end)
 

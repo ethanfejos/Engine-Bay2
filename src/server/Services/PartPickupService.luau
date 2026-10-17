@@ -313,6 +313,15 @@ function PartPickupService.CollectPart(itemId: string)
 	end
 end
 
+-- How many of this player's parts are lying on the floor (Tony's inspections).
+function PartPickupService.FloorCount(player: Player): number
+	local n = 0
+	for _, drop in pairs(droppedParts) do
+		if drop.player == player then n += 1 end
+	end
+	return n
+end
+
 -- Moves every part this player has lying on the floor into their
 -- inventory (e.g. before a customer's car leaves, so its parts can go with it).
 function PartPickupService.CollectAllFor(player: Player)

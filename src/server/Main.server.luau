@@ -25,6 +25,7 @@ local log = require(SharedModules:WaitForChild("Log")).new("Main")
 local ORDER = {
 	{ SharedModules, "Remotes" },      -- creates every RemoteEvent first
 	{ Modules,  "ProfileManager" },    -- saving; everything below uses it
+	{ Services, "SettingsService" },   -- the player's own settings
 	{ Services, "ZoneService" },       -- zone enter/leave signals
 	{ Services, "CarService" },        -- car ids and owners
 	{ Services, "InventoryService" },
@@ -38,6 +39,7 @@ local ORDER = {
 	{ Services, "ToolService" },       -- needs Zone
 	{ Services, "JobService" },        -- needs Car, Money, Level, Inventory, PartPickup, Reputation, Tony
 	{ Services, "BayRentalService" },  -- needs Car, Money, Tony, Job
+	{ Services, "DevService" },        -- testing cheats; needs most of the above
 }
 
 local started, failed = 0, 0

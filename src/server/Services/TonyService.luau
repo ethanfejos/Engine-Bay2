@@ -411,6 +411,24 @@ task.spawn(function()
 	end
 end)
 
+-- Testing (DevService): switch Tony's mood now. Returns false for an unknown id.
+function TonyService.ForceMood(id: string): boolean
+	for _, m in ipairs(MOODS) do
+		if m.id == id then
+			setMood(m, true)
+			return true
+		end
+	end
+	return false
+end
+
+-- Testing (DevService): the mood ids, in order.
+function TonyService.MoodIds(): { string }
+	local ids = {}
+	for _, m in ipairs(MOODS) do table.insert(ids, m.id) end
+	return ids
+end
+
 -- ── Players ───────────────────────────────────────────────────────────────────
 
 ProfileManager.OnProfileLoaded(function(player)

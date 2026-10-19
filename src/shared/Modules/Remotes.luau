@@ -68,6 +68,8 @@ export type Remotes = {
 	ReleaseBay       : RemoteEvent, -- client -> server: hand back the keys
 	LoanOffer        : RemoteEvent, -- server -> client: Tony's loan terms (Desperate mood)
 	RequestLoan      : RemoteEvent, -- client -> server: amount to borrow
+	SaveSetting      : RemoteEvent, -- client -> server: key, value (SettingsService)
+	DevCommand       : RemoteEvent, -- client -> server: testing cheat (DevService; devs only); server -> client: result text
 
 	-- Workbench (RepairService)
 	StartRepair      : RemoteEvent, -- client -> server: itemId
@@ -84,7 +86,7 @@ local NAMES = {
 	"MoneyUpdated", "RequestMoney",
 	"RemovePart", "PartRemoving",
 	"NpcSpeech", "JobUpdated", "CancelJob", "JobReceipt", "JobQueue", "TakeJob", "SetExtras",
-	"TonyStatus", "ReleaseBay", "LoanOffer", "RequestLoan",
+	"TonyStatus", "ReleaseBay", "LoanOffer", "RequestLoan", "SaveSetting", "DevCommand",
 	"StartRepair", "CancelRepair", "ReplacePart", "RepairProgress", "RepairComplete", "RepairRefused",
 }
 

@@ -19,11 +19,25 @@
     numbers below are the same as before the split.
 ]]
 
-local RunService       = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local Workspace        = game:GetService("Workspace")
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService        = game:GetService("RunService")
+local UserInputService  = game:GetService("UserInputService")
+local Workspace         = game:GetService("Workspace")
+
+local PlayerSettings = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("PlayerSettings"))
 
 local camera = Workspace.CurrentCamera
+local player = Players.LocalPlayer
+
+-- The player's camera settings (PlayerSettings): speed multipliers, invert.
+local function setting(key: string): number
+	local value = PlayerSettings.Get(player, key)
+	return if type(value) == "number" then value else 1
+end
+local function invertY(): boolean
+	return PlayerSettings.Get(player, "invertY") == true
+end
 
 -- ── Config ────────────────────────────────────────────────────────────────────
 
@@ -114,7 +128,7 @@ local function applyPan(deltaX: number, deltaY: number)
 		right = right.Unit
 	end
 
-	pivotTarget = clampToPanBox(pivotTarget + (-right * deltaX + up * deltaY) * PAN_SENSITIVITY)
+	pivotTarget = clampToPanBox(pivotTarget + (-right * deltaX + up * deltaY) * PAN_SENSITIVITY * setting("panSpeed"))
 end
 
 -- ── Render loop ───────────────────────────────────────────────────────────────
@@ -137,7 +151,7 @@ local function startLoop()
 			local forward = Vector3.new(-math.sin(yawRad), 0, -math.cos(yawRad))
 			local right   = Vector3.new(math.cos(yawRad), 0, -math.sin(yawRad))
 			pivotTarget = clampToPanBox(pivotTarget
-				+ (right * keyPanX + forward * keyPanZ) * PAN_SENSITIVITY * 60 * dt)
+				+ (right * keyPanX + forward * keyPanZ) * PAN_SENSITIVITY * setting("panSpeed") * 60 * dt)
 		end
 
 		orbitDistance += (zoomTarget - orbitDistance) * math.clamp(dt * ZOOM_DAMP, 0, 1)
@@ -198,15 +212,16 @@ local function connectInput()
 			if panning then
 				applyPan(input.Delta.X, input.Delta.Y)
 			elseif dragging then
-				local pitchDelta = input.Delta.Y * ORBIT_SENSITIVITY
+				local sensitivity = ORBIT_SENSITIVITY * setting("orbitSpeed")
+				local pitchDelta = input.Delta.Y * sensitivity * (if invertY() then -1 else 1)
 				local resistance = softResistance(orbitPitch, pitchDelta)
-				orbitYaw   = orbitYaw - input.Delta.X * ORBIT_SENSITIVITY
+				orbitYaw   = orbitYaw - input.Delta.X * sensitivity
 				orbitPitch = math.clamp(orbitPitch + pitchDelta * resistance, VERTICAL_MIN, VERTICAL_MAX)
 			end
 		end
 
 		if input.UserInputType == Enum.UserInputType.MouseWheel then
-			zoomTarget = math.clamp(zoomTarget - input.Position.Z * ZOOM_SPEED, MIN_DISTANCE, MAX_DISTANCE)
+			zoomTarget = math.clamp(zoomTarget - input.Position.Z * ZOOM_SPEED * setting("zoomSpeed"), MIN_DISTANCE, MAX_DISTANCE)
 		end
 	end))
 end
@@ -268,6 +283,18 @@ function OrbitCamera.Start(center: Vector3, startYaw: number, onSettled: (() -> 
 	camera.CFrame = orbitCFrame()
 
 	startLoop()
+
+	-- "Skip the camera swoop in" (PlayerSettings.skipIntro): straight to the
+	-- working view.
+	if PlayerSettings.Get(player, "skipIntro") == true then
+		orbitPitch    = TILT_DOWN_PITCH
+		orbitDistance = TILT_DOWN_DISTANCE
+		zoomTarget    = TILT_DOWN_DISTANCE
+		camera.CFrame = orbitCFrame()
+		connectInput()
+		if onSettled then task.defer(onSettled) end
+		return
+	end
 
 	-- Bird's-eye, short pause, then tilt down — then hand over control.
 	entryTween = tweenOrbitTo(BIRDS_EYE_PITCH, BIRDS_EYE_DISTANCE, BIRDS_EYE_TWEEN, function()

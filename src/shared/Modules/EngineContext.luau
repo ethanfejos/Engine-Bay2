@@ -130,6 +130,11 @@ function EngineContext.IsInEngineView(): boolean
 	return _inEngineView
 end
 
+-- The engine being viewed (set on entering engine view), or nil.
+function EngineContext.GetEngine(): Model?
+	return _engine
+end
+
 function EngineContext.GetCurrentTarget(): Instance?
 	return _currentTarget
 end

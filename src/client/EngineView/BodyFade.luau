@@ -28,6 +28,7 @@ local TweenService      = game:GetService("TweenService")
 local Workspace         = game:GetService("Workspace")
 
 local ZoneUtils = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
+local PlayerSettings = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("PlayerSettings"))
 
 local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
@@ -37,7 +38,13 @@ local camera = Workspace.CurrentCamera
 local CHECK_INTERVAL = 0.2  -- seconds between re-checks while in view
 local PADDING        = 6    -- studs added around the engine's box for the first fade
 local LINE_WIDTH     = 4    -- width/height of the camera -> engine "tube"
-local AMOUNT         = 0.65 -- 0 = no change, 1 = fully invisible
+-- How much faded parts fade (0 = not at all, 1 = invisible): the player's
+-- "Bodywork fade" setting (PlayerSettings.bodyFade, 0–100%). Changing it
+-- in engine view updates the faded parts straight away.
+local function amount(): number
+	local value = PlayerSettings.Get(player, "bodyFade")
+	return math.clamp((if type(value) == "number" then value else 65) / 100, 0, 1)
+end
 local TWEEN_TIME     = 0.2
 local RESTORE_TIME   = 0.25
 
@@ -100,7 +107,7 @@ local function update(engine: Model)
 	for part in pairs(obstructing) do
 		if not fadedParts[part] then
 			fadedParts[part] = true
-			fadeTo(part, AMOUNT, TWEEN_TIME)
+			fadeTo(part, amount(), TWEEN_TIME)
 		end
 	end
 
@@ -126,7 +133,7 @@ function BodyFade.Start(engine: Model)
 	local padded = size + Vector3.new(PADDING, PADDING, PADDING) * 2
 	for part in pairs(bodyPartsInBox(engine, engineCFrame, padded)) do
 		fadedParts[part] = true
-		fadeTo(part, AMOUNT, TWEEN_TIME)
+		fadeTo(part, amount(), TWEEN_TIME)
 	end
 
 	-- Then follow the camera.
@@ -150,5 +157,12 @@ function BodyFade.Stop()
 	end
 	table.clear(fadedParts)
 end
+
+-- The setting changed: re-fade what's faded now to the new amount.
+player:GetAttributeChangedSignal(PlayerSettings.ATTRIBUTE_PREFIX .. "bodyFade"):Connect(function()
+	for part in pairs(fadedParts) do
+		if part.Parent then fadeTo(part, amount(), TWEEN_TIME) end
+	end
+end)
 
 return BodyFade

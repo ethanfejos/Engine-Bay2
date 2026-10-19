@@ -45,6 +45,7 @@ local CollectionService = game:GetService("CollectionService")
 local HttpService       = game:GetService("HttpService")
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService        = game:GetService("RunService")
 local ServerStorage     = game:GetService("ServerStorage")
 local Workspace         = game:GetService("Workspace")
 
@@ -238,8 +239,22 @@ end
 -- Switches off the car's own scripts and anchors every part (see
 -- HOLD_STILL_IN_BAY). Done before the car enters the world, so nothing in
 -- it ever runs or moves.
+-- KeepWorking = true (attribute) on anything in a car: its scripts stay on
+-- and its parts stay unanchored while the car is held still (only for things
+-- that are properly jointed — most A-Chassis parts are only welded by its
+-- start-up script, which never runs in a bay).
+local function markedKeepWorking(instance: Instance, car: Model): boolean
+	local node: Instance? = instance
+	while node and node ~= car do
+		if node:GetAttribute("KeepWorking") == true then return true end
+		node = node.Parent
+	end
+	return false
+end
+
 local function holdStill(car: Model)
 	for _, d in ipairs(car:GetDescendants()) do
+		if markedKeepWorking(d, car) then continue end
 		if d:IsA("BaseScript") then
 			d.Enabled = false
 		elseif d:IsA("BasePart") then
@@ -247,6 +262,67 @@ local function holdStill(car: Model)
 		end
 	end
 end
+
+-- ── Hoods (and other A-Chassis "Misc" flaps) ───────────────────────────────────
+-- In A-Chassis a hood is a model in Misc with a hinge part "SS"; the chassis's
+-- start-up script makes SS a Motor and a click script turns it. A car held
+-- still runs none of that, so the game swings it instead: every part in the
+-- model (except SS) turns about SS's Z axis, all still anchored. Turn the
+-- other way by giving the model an "OpenAngle" attribute (degrees; default
+-- -57, the 1 radian A-Chassis opens to).
+local HOOD_TIME = 0.6 -- seconds to open or close
+
+local function setupFlaps(car: Model)
+	for _, click in ipairs(car:GetDescendants()) do
+		if not click:IsA("ClickDetector") then continue end
+		-- The model holding both the click and an SS hinge.
+		local flap: Instance? = click.Parent
+		while flap and flap ~= car and not (flap:IsA("Model") and flap:FindFirstChild("SS")) do
+			flap = flap.Parent
+		end
+		if not flap or flap == car then continue end
+		local hinge = flap:FindFirstChild("SS")
+		if not hinge or not hinge:IsA("BasePart") then continue end
+		local flapModel = flap :: Model
+		local hingePart = hinge :: BasePart
+
+		local parts: { BasePart } = {}
+		local offsets: { CFrame } = {}
+		for _, d in ipairs(flapModel:GetDescendants()) do
+			if d:IsA("BasePart") and d ~= hingePart then
+				table.insert(parts, d)
+				table.insert(offsets, hingePart.CFrame:ToObjectSpace(d.CFrame))
+			end
+		end
+		local degrees = flapModel:GetAttribute("OpenAngle")
+		local openAngle = math.rad(if type(degrees) == "number" then degrees else -57.3)
+		local function sound(name: string)
+			local s = flapModel:FindFirstChild(name, true)
+			if s and s:IsA("Sound") then s:Play() end
+		end
+
+		local angle, target, moving = 0, 0, false
+		click.MouseClick:Connect(function(player: Player)
+			if not CarUtils.CanWorkOn(car, player) then return end
+			target = if target == 0 then 1 else 0
+			if target == 1 then sound("DoorOpen") end
+			if moving then return end
+			moving = true
+			while angle ~= target and car.Parent do
+				local step = RunService.Heartbeat:Wait() / HOOD_TIME
+				angle = if target > angle then math.min(target, angle + step) else math.max(target, angle - step)
+				local turn = hingePart.CFrame * CFrame.Angles(0, 0, openAngle * angle)
+				for i, part in ipairs(parts) do
+					if part.Parent then part.CFrame = turn * offsets[i] end
+				end
+			end
+			moving = false
+			if angle == 0 then sound("DoorClose") end
+		end)
+	end
+end
+
+
 
 -- Half the height a box really takes up in the world, whatever way it's
 -- rotated (a model's bounding box follows its pivot, which on many cars —
@@ -397,6 +473,9 @@ function CarService.SpawnCar(worker: Player, record: CarRecord, zone: BasePart, 
 		placeInZone(car, zone)
 		car.Parent = carsFolder
 		register(car)
+		if HOLD_STILL_IN_BAY then
+			setupFlaps(car) -- the hood opens again (its own script is off)
+		end
 		return car
 	end)
 	reservedZones[zone.Name] = nil

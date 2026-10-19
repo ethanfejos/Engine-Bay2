@@ -26,6 +26,7 @@
 ]]
 
 local Types = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Types"))
+local PlayerSettings = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Config"):WaitForChild("PlayerSettings"))
 
 type Item = Types.InventoryItem
 
@@ -80,6 +81,7 @@ export type Data = {
 	regulars: { [string]: RegularRecord }, -- customers who'll come back, [key] (JobService)
 	reputation: number,             -- stars, 0–5 in small steps (ReputationService)
 	tonyDebt: number,               -- what the player owes Tony, whole dollars (TonyService)
+	settings: { [string]: number | boolean }, -- the player's own settings (PlayerSettings, SettingsService)
 }
 
 local SaveData = {}
@@ -122,6 +124,9 @@ local TEMPLATE: Data = {
 
 	-- Customers who'll come back (none yet).
 	regulars = {},
+
+	-- The player's own settings; anything not here uses its default.
+	settings = {},
 }
 SaveData.TEMPLATE = TEMPLATE
 
@@ -393,6 +398,16 @@ function SaveData.Sanitize(data: any): { string }
 		end
 	end
 	data.regulars = regulars
+
+	-- Settings: only known keys with valid values.
+	local settings: { [string]: number | boolean } = {}
+	if type(data.settings) == "table" then
+		for key, value in pairs(data.settings) do
+			local clean = PlayerSettings.Clean(key, value)
+			if clean ~= nil then settings[key] = clean end
+		end
+	end
+	data.settings = settings
 
 	if type(data.activeCarId) ~= "string" or cars[data.activeCarId] == nil then
 		if data.activeCarId ~= nil then

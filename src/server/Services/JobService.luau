@@ -296,6 +296,17 @@ local function sendUpdate(player: Player)
 		cancelFine     = math.max(1, math.floor(a.job.pay * TonyService.GetMood().cancelFine + 0.5)),
 		cancelStars    = -ReputationService.CHANGES.cancelled,
 		extras         = if complete then extrasFor(a) else nil,
+		-- Faulty parts still in the car and not fixed yet, by path — the
+		-- engine view's part finder flashes them (EngineHelpUI).
+		findParts      = (function()
+			local out = {}
+			for _, path in ipairs(a.job.faults) do
+				if not a.job.car.missing[path] and not isFixed(a.job, path) then
+					table.insert(out, path)
+				end
+			end
+			return out
+		end)(),
 	})
 end
 
@@ -481,7 +492,12 @@ local function handBack(player: Player, triggering: Player, a: Active)
 			name   = a.job.customerName,
 			userId = a.job.customerUserId,
 			kind   = a.kind.id,
-			car    = deepCopy(a.job.car),
+			car    = (function()
+				local saved = deepCopy(a.job.car)
+				saved.inspected = {} -- forgotten by the next visit
+				saved.xpPaid = {}
+				return saved
+			end)(),
 			visits = (if existing then existing.visits else 0) + 1,
 		}
 	end
@@ -662,6 +678,10 @@ local function repeatJob(player: Player): JobRecord?
 	local faults = pickFaults(paths, math.random(FAULTS_MIN, FAULTS_MAX))
 	local car = deepCopy(r.car)
 	car.missing = {}
+	-- A new visit is a new job: nothing's been inspected yet, and taking
+	-- parts out earns XP again.
+	car.inspected = {}
+	car.xpPaid = {}
 	for _, path in ipairs(faults) do car.wear[path] = randomIn(FAULT_WEAR) end
 	local labels = {}
 	for i, path in ipairs(faults) do labels[i] = partLabel(path) end
@@ -1040,6 +1060,11 @@ function JobService.InspectionReport(player: Player): { partsOut: number, keptWa
 		if a.job.car.missing[path] then out += 1 end
 	end
 	return { partsOut = out, keptWaiting = patienceLeft(a) < 0.5 }
+end
+
+-- Testing (DevService): a customer joins the queue now (if there's room).
+function JobService.DevCustomerNow(player: Player): boolean
+	return arrive(player)
 end
 
 -- Seconds since the player last did any work: a part out or in, a job

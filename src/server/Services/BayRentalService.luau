@@ -369,6 +369,31 @@ function BayRentalService.GetBay(player: Player): BasePart?
 	return if rental then rental.bay else nil
 end
 
+-- Testing (DevService): Tony announces an inspection that happens in `seconds`.
+function BayRentalService.DevInspectSoon(player: Player, seconds: number): boolean
+	local rental = rentals[player]
+	if not rental then return false end
+	rental.warned = true
+	rental.inspectAt = now() + seconds
+	say(player, LINES.inspectSoon)
+	pushRent(player)
+	return true
+end
+
+-- Testing (DevService): wipe the player's late-rent strikes.
+function BayRentalService.DevClearStrikes(player: Player): boolean
+	local rental = rentals[player]
+	if not rental then return false end
+	rental.strikes = 0
+	pushRent(player)
+	return true
+end
+
+-- Testing (DevService): lift an eviction ban.
+function BayRentalService.DevLiftBan(player: Player)
+	bannedUntil[player.UserId] = nil
+end
+
 -- ── Tony ──────────────────────────────────────────────────────────────────────
 
 -- "Rent a bay ($3/min) · Tony's grumpy"

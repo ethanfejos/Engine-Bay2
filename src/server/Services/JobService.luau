@@ -823,8 +823,28 @@ end
 -- The parking spaces that belong to `bay`, in the order they fill. They're
 -- parts with a "Bay" attribute inside a Folder or Model called
 -- "ParkingSpots" anywhere in the Workspace.
+--
+-- Finding them means searching the whole Workspace, so each bay's list is
+-- worked out once and remembered. Adding or removing a ParkingSpots folder,
+-- or a space inside one, throws the remembered lists away so they're
+-- rebuilt next time. (Changing a space's Bay or Order attribute while the
+-- game is running isn't noticed — not something that happens in play.)
 local warnedNoSpots: { [string]: boolean } = {}
+local spotCache: { [BasePart]: { BasePart } } = {}
+
+local function isParkingChange(inst: Instance): boolean
+	return inst.Name == "ParkingSpots" or inst:FindFirstAncestor("ParkingSpots") ~= nil
+end
+Workspace.DescendantAdded:Connect(function(inst)
+	if isParkingChange(inst) then table.clear(spotCache) end
+end)
+Workspace.DescendantRemoving:Connect(function(inst)
+	if isParkingChange(inst) then table.clear(spotCache) end
+end)
+
 local function spotsFor(bay: BasePart): { BasePart }
+	local cached = spotCache[bay]
+	if cached then return cached end
 	local list: { BasePart } = {}
 	local seenBays: { string } = {}
 	local folders = 0
@@ -857,6 +877,7 @@ local function spotsFor(bay: BasePart): { BasePart }
 		if na ~= nb then return na < nb end
 		return a.Name < b.Name
 	end)
+	spotCache[bay] = list
 	return list
 end
 

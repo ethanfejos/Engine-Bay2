@@ -10,6 +10,7 @@
     - Removing parts from inventory when reinstalled
     - Replicating inventory state to client
     - Saving on leave via ProfileService
+    - Clear Inventory (testing tool, game owner only — see Owner.luau)
 
     RemoteEvents used:
     - InventoryUpdated  (server -> client) fires when inventory changes
@@ -26,6 +27,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 -- "ProfileService" so every ProfileService.GetProfile(...) call below is
 -- unchanged.
 local ProfileService = require(script.Parent.Parent.Modules.ProfileManager)
+local Owner          = require(script.Parent.Parent.Modules.Owner)
 local CarService     = require(script.Parent.CarService)
 local ZoneUtils      = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("ZoneUtils"))
 local CarUtils       = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("CarUtils"))
@@ -318,7 +320,13 @@ reinstallEvent.OnServerEvent:Connect(function(player, itemId)
 	CarService.RecordChange(engine)
 end)
 
+-- Testing tool, owner only: anyone else firing this remote is ignored
+-- (the button is only shown to the owner, but the client can't be trusted).
 clearInventory.OnServerEvent:Connect(function(player)
+	if not Owner.Is(player) then
+		warn("[InventoryService]", player.Name, "tried to clear their inventory without being the owner")
+		return
+	end
 	local profile = ProfileService.GetProfile(player)
 	if not profile then return end
 	profile.Data.inventory = {}

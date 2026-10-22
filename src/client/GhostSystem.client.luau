@@ -18,7 +18,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService  = game:GetService("UserInputService")
 
 local player  = Players.LocalPlayer
-local mouse   = player:GetMouse()
 
 local Modules       = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules")
 local EngineContext  = require(Modules:WaitForChild("EngineContext"))
@@ -163,8 +162,11 @@ UserInputService.InputBegan:Connect(function(input, processed)
 	if not activeGhost then return end
 	if not selectedPart or not selectedEngine then return end
 
-	-- Check mouse is hovering over the ghost
-	local target = mouse.Target
+	-- Only when the mouse is on the ghost. Uses EngineContext's hit (a ray
+	-- that only sees the engine and looks through invisible parts), the same
+	-- one the hover uses — so the car body or a faded part in front can't
+	-- swallow the click, and hover and click always agree.
+	local target = EngineContext.GetHitPart()
 	if not target then return end
 	if not target:IsDescendantOf(activeGhost) then return end
 

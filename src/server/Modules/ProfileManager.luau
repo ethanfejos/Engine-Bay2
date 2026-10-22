@@ -128,10 +128,13 @@ function ProfileManager._loadProfile(player: Player): Profile?
 	end
 
 	profile:ListenToRelease(function()
+		-- releasePlayer (leaving or shutdown) clears the entry BEFORE it
+		-- releases, so a release we asked for ends here.
+		if profiles[player] ~= profile then return end
 		profiles[player] = nil
-		-- Only happens if the session lock was taken by another server
-		-- while this one still thought it owned it — safest to disconnect
-		-- rather than let the player keep playing on stale/unsaved data.
+		-- Otherwise the session lock was taken by another server while this
+		-- one still thought it owned it — safest to disconnect rather than
+		-- let the player keep playing on stale/unsaved data.
 		if player:IsDescendantOf(Players) then
 			player:Kick("Your data was loaded on another server. Please rejoin.")
 		end
@@ -164,16 +167,41 @@ function ProfileManager.OnBeforeRelease(callback: ProfileCallback)
 	table.insert(beforeReleaseCallbacks, callback)
 end
 
-Players.PlayerRemoving:Connect(function(player)
+-- Runs the before-release callbacks and releases (= final save) a player's
+-- profile. Safe to call twice for the same player: whichever of leaving or
+-- shutting down gets there first does the work, the other finds nothing.
+local releasing: { [Player]: boolean } = {}
+
+local function releasePlayer(player: Player)
 	local profile = profiles[player]
-	if profile then
-		for _, callback in ipairs(beforeReleaseCallbacks) do
-			local ok, err = pcall(function() callback(player, profile) end)
-			if not ok then
-				warn("[ProfileManager] OnBeforeRelease callback errored:", err)
-			end
+	if not profile or releasing[player] then return end
+	releasing[player] = true
+	-- The callbacks may still call GetProfile, so the profile stays listed
+	-- until they've all run.
+	for _, callback in ipairs(beforeReleaseCallbacks) do
+		local ok, err = pcall(function() callback(player, profile) end)
+		if not ok then
+			warn("[ProfileManager] OnBeforeRelease callback errored:", err)
 		end
-		profile:Release()
+	end
+	profiles[player] = nil
+	releasing[player] = nil
+	profile:Release()
+end
+
+Players.PlayerRemoving:Connect(releasePlayer)
+
+-- Server shutting down (an update, or the last player leaving). PlayerRemoving
+-- isn't guaranteed to run before ProfileService's own shutdown save, so the
+-- OnBeforeRelease callbacks (jobs, parked cars, parts on the floor) could be
+-- skipped and that last bit of progress lost. Doing it here first makes sure
+-- it lands in the save. This is registered when ProfileManager is first
+-- required (very early in Main), ahead of ProfileService's own handler, and
+-- the callbacks don't yield, so they finish before its save runs.
+-- ProfileService then waits for the saves to finish before the server closes.
+game:BindToClose(function()
+	for player in pairs(profiles) do
+		releasePlayer(player)
 	end
 end)
 

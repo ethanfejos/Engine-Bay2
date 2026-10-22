@@ -20,7 +20,8 @@
 
     Also: search as you type, a sort menu (Name, Condition low/high, Engine),
     a count badge when the panel is closed, and CLEAR INVENTORY (a testing
-    tool — needs a second click within a few seconds to confirm).
+    tool, shown to the game's owner only — needs a second click within a
+    few seconds to confirm).
 
     Rows are created once per part and updated in place, so typing in the
     search box or receiving an update doesn't rebuild the whole list.
@@ -67,7 +68,7 @@ local TOGGLE_H   = 44
 local ROW_H      = 46
 local LIST_TOP   = 98   -- where the parts list starts
 local SORT_W     = 104  -- the sort button, beside the search box
-local CLEAR_H    = 30   -- the CLEAR INVENTORY button at the bottom
+local CLEAR_H    = 30   -- the CLEAR INVENTORY button at the bottom (owner only)
 local TWEEN_INFO = TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 
 -- The layout is designed at 1080p and scaled up (never down) on taller screens.
@@ -299,9 +300,13 @@ for i, mode in ipairs(SORT_MODES) do
 	dropButtons[i]           = b
 end
 
+-- Room kept at the bottom for CLEAR INVENTORY: CLEAR_H for the owner, 0 for
+-- everyone else (the button is hidden — see "Clear inventory" below).
+local clearSpace = 0
+
 -- List
 local scroll                  = Instance.new("ScrollingFrame")
-scroll.Size                   = UDim2.new(1, -16, 1, -(LIST_TOP + CLEAR_H + 20))
+scroll.Size                   = UDim2.new(1, -16, 1, -(LIST_TOP + clearSpace + 20))
 scroll.Position               = UDim2.new(0, 8, 0, LIST_TOP)
 scroll.BackgroundTransparency = 1
 scroll.BorderSizePixel        = 0
@@ -330,7 +335,7 @@ local function resizePanel()
 	local content = listLayout.AbsoluteContentSize.Y / scale + 8
 	local screenRoom = camera.ViewportSize.Y / scale - TOP - 140
 	local maxH = math.max(260, math.min(PANEL_MAX, screenRoom))
-	local h = math.clamp(LIST_TOP + content + CLEAR_H + 22, LIST_TOP + 60 + CLEAR_H, maxH)
+	local h = math.clamp(LIST_TOP + content + clearSpace + 22, LIST_TOP + 60 + clearSpace, maxH)
 	root.Size = UDim2.new(0, PANEL_W + TOGGLE_W, 0, h)
 end
 listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(resizePanel)
@@ -341,14 +346,29 @@ local emptyLabel       = text("Empty", "No parts removed", 12, C.GlassFaint, Enu
 emptyLabel.Size        = UDim2.new(1, 0, 0, 34)
 emptyLabel.LayoutOrder = -1
 
--- Clear (testing tool), at the bottom
-divider(panel, 0).Position = UDim2.new(0, 0, 1, -(CLEAR_H + 14))
+-- Clear (testing tool, owner only), at the bottom
+local clearDivider    = divider(panel, 0)
+clearDivider.Position = UDim2.new(0, 0, 1, -(CLEAR_H + 14))
 local clearBtn                  = flatButton("CLEAR INVENTORY (TESTING)", panel)
 clearBtn.Size                   = UDim2.new(1, -28, 0, CLEAR_H - 4)
 clearBtn.Position               = UDim2.new(0, 14, 1, -(CLEAR_H + 4))
 clearBtn.BackgroundTransparency = 1
 clearBtn.TextColor3             = C.GlassMuted
 clearBtn.TextSize               = 11
+
+-- Only the game's owner sees the button (the server marks them "IsDev" and
+-- also refuses the request from anyone else). The list takes the space back
+-- when it's hidden.
+local function updateClearVisible()
+	local isOwner        = player:GetAttribute("IsDev") == true
+	clearSpace           = if isOwner then CLEAR_H else 0
+	clearBtn.Visible     = isOwner
+	clearDivider.Visible = isOwner
+	scroll.Size          = UDim2.new(1, -16, 1, -(LIST_TOP + clearSpace + 20))
+	resizePanel()
+end
+player:GetAttributeChangedSignal("IsDev"):Connect(updateClearVisible)
+updateClearVisible()
 
 -- Mouse wheel over the panel scrolls the list instead of zooming the camera.
 panel.MouseEnter:Connect(function()

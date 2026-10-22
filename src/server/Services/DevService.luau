@@ -21,14 +21,14 @@
     DevCommand (server -> client): a short result line for the menu.
 ]]
 
-local GroupService      = game:GetService("GroupService")
-local Players           = game:GetService("Players")
+local Players          = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Modules           = ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Modules")
 local Remotes           = require(Modules:WaitForChild("Remotes"))
 local Log               = require(Modules:WaitForChild("Log"))
 local ProfileManager    = require(script.Parent.Parent.Modules.ProfileManager)
+local Owner             = require(script.Parent.Parent.Modules.Owner)
 local MoneyService      = require(script.Parent.MoneyService)
 local LevelService      = require(script.Parent.LevelService)
 local ReputationService = require(script.Parent.ReputationService)
@@ -40,31 +40,11 @@ local log = Log.new("DevService")
 
 local DevService = {}
 
--- ── Who's the owner ───────────────────────────────────────────────────────────
+-- ── Who's the owner (rule lives in Owner.luau) ────────────────────────────────
 
-local ownerId: number? = nil
-if game.CreatorType == Enum.CreatorType.User then
-	ownerId = game.CreatorId
-else
-	local ok, info = pcall(function()
-		return GroupService:GetGroupInfoAsync(game.CreatorId)
-	end)
-	if ok and type(info) == "table" and type(info.Owner) == "table" and type(info.Owner.Id) == "number" then
-		ownerId = info.Owner.Id
-	else
-		log.warn("Couldn't look up the group owner — cheat menu off")
-	end
-end
-
-local function isOwner(player: Player): boolean
-	return ownerId ~= nil and ownerId > 0 and player.UserId == ownerId
-end
-
-local function mark(player: Player)
-	if isOwner(player) then player:SetAttribute("IsDev", true) end
-end
-Players.PlayerAdded:Connect(mark)
-for _, p in ipairs(Players:GetPlayers()) do mark(p) end
+local isOwner = Owner.Is
+Players.PlayerAdded:Connect(Owner.Mark)
+for _, p in ipairs(Players:GetPlayers()) do task.spawn(Owner.Mark, p) end
 
 -- ── Commands ──────────────────────────────────────────────────────────────────
 
